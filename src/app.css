@@ -1,0 +1,26 @@
+/* Basic reset and body styling */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; /* Prevent body scrollbars */
+  background-color: #1e1e1e; /* Dark background */
+  color: #d4d4d4; /* Light text */
+  font-family: sans-serif;
+}
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh; /* Full viewport height */
+}
+
+.terminal-container {
+  flex-grow: 1; /* Allow terminal to fill available space */
+  overflow: hidden; /* Prevent scrollbars on the container */
+}
+
+/* Ensure xterm takes full height within its container */
+.terminal-container .xterm {
+  height: 100% !important;
+}

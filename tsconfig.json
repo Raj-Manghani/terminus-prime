@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "target": "ES2018", // Target modern ECMAScript features supported by recent Electron
+    "module": "CommonJS", // Output CommonJS modules, suitable for Electron main/preload
+    "jsx": "react", // Process JSX for React
+    "strict": true, // Enable all strict type-checking options
+    "moduleResolution": "node", // Use Node.js style module resolution
+    "esModuleInterop": true, // Enables emit interoperability between CommonJS and ES Modules
+    "allowSyntheticDefaultImports": true, // Allow default imports from modules with no default export
+    "resolveJsonModule": true, // Allow importing JSON files
+    "skipLibCheck": true, // Skip type checking of all declaration files (*.d.ts)
+    "forceConsistentCasingInFileNames": true, // Disallow inconsistently-cased references to the same file
+    "outDir": ".webpack", // Output directory (though Webpack manages final output)
+    "sourceMap": true, // Generate source maps for debugging
+    "baseUrl": ".", // Base directory for non-relative module imports
+    "paths": { // Optional: Define path aliases if needed later
+      "*": ["node_modules/*"]
+    },
+    "lib": ["dom", "esnext"] // Include DOM typings for renderer and latest ES features
+  },
+  "include": [
+    "src/**/*" // Include all files in the src directory
+  ],
+  "exclude": [
+    "node_modules", // Exclude node_modules
+    ".webpack", // Exclude webpack output directory
+    "dist" // Exclude potential distribution output
+  ]
+}
