@@ -1,51 +1,67 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
-import { Client } from 'ssh2'; // Uncomment SSH import
+import { Client } from 'ssh2';
+import { secureStorageService } from './services/SecureStorageService'; // Import storage service
+import { sessionManagerService } from './services/SessionManagerService'; // Import session service
+import { SessionProfile } from './components/SessionManager'; // Import type
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
-// No preload script needed with nodeIntegration: true
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 if (require('electron-squirrel-startup')) {
   app.quit();
 }
 
+// !!! TEMPORARY - Replace with a proper password prompt/handling mechanism !!!
+const TEMP_MASTER_PASSWORD = "password";
+// !!! --- !!!
+
 let mainWindow: BrowserWindow | null;
 let sshClient: Client | null = null;
-let sshStream: any = null; // Using 'any' for now to avoid type issues
+let sshStream: any = null;
 
 const createWindow = (): void => {
   mainWindow = new BrowserWindow({
     width: 1024,
     height: 768,
     webPreferences: {
-      // No preload script needed with nodeIntegration: true
-      nodeIntegration: true, // Enable Node.js integration in the renderer
-      contextIsolation: false, // Disable context isolation (less secure, but often needed with nodeIntegration: true)
+      nodeIntegration: true,
+      contextIsolation: false,
     },
   });
 
-  // Load the URL provided by the Webpack plugin (dev server)
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
-
-  // Open the DevTools.
   mainWindow.webContents.openDevTools();
 
   mainWindow.on('closed', () => {
-    // Close SSH connection if it exists
-    if (sshStream) {
-      sshStream.end();
-    }
-    if (sshClient) {
-      sshClient.end();
-    }
+    if (sshStream) sshStream.end();
+    if (sshClient) sshClient.end();
     sshClient = null;
     sshStream = null;
     mainWindow = null;
   });
 };
 
-app.on('ready', createWindow);
+// App Initialization
+app.on('ready', async () => {
+  console.log('App ready, initializing services...');
+  // Initialize encryption key using password derivation
+  const keyInitialized = await secureStorageService.initializeEncryptionKey(TEMP_MASTER_PASSWORD);
+
+  if (!keyInitialized) {
+    // Handle key initialization failure (e.g., show error dialog)
+    console.error("FATAL: Could not initialize encryption key. Exiting.");
+    // TODO: Show an error message to the user before quitting
+    app.quit();
+    return;
+  }
+
+  // Load sessions now that the key is ready
+  await sessionManagerService.loadSessions();
+
+  // Create the main window
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -61,12 +77,19 @@ app.on('activate', () => {
 
 // --- IPC Handlers ---
 
-ipcMain.on('terminal-connect', (event, config) => {
+// SSH Connection Handling (existing)
+ipcMain.on('terminal-connect', (event, config: SessionProfile) => { // Use SessionProfile type
   console.log('Received terminal-connect request:', config);
+  if (!config || !config.host || !config.username || !config.password) {
+      console.error('Invalid connection config received:', config);
+      mainWindow?.webContents.send('terminal-status', { status: 'error', message: 'Invalid connection details.' });
+      return;
+  }
+
   if (sshClient) {
     console.log('SSH client already exists, ending previous connection.');
     sshStream?.end();
-    sshClient.end();
+    sshClient.end(); // End previous client
     sshClient = null;
     sshStream = null;
   }
@@ -97,7 +120,7 @@ ipcMain.on('terminal-connect', (event, config) => {
       sshStream.on('close', () => {
         console.log('SSH Stream :: close');
         mainWindow?.webContents.send('terminal-status', { status: 'disconnected', message: 'Shell closed.' });
-        sshClient?.end();
+        sshClient?.end(); // Ensure client is ended when stream closes
         sshClient = null;
         sshStream = null;
       });
@@ -109,16 +132,16 @@ ipcMain.on('terminal-connect', (event, config) => {
     sshStream = null;
   }).on('close', () => {
     console.log('SSH Client :: close');
-     if (sshStream) {
+     if (sshStream) { // Check if stream existed before sending status
         mainWindow?.webContents.send('terminal-status', { status: 'disconnected', message: 'Connection closed.' });
         sshStream = null;
      }
-    sshClient = null;
+    sshClient = null; // Ensure client is nullified on close
   }).connect({
     host: config.host,
     port: config.port || 22,
     username: config.username,
-    password: config.password,
+    password: config.password, // Password provided at runtime
     readyTimeout: 20000
   });
 });
@@ -132,6 +155,43 @@ ipcMain.on('terminal-data', (event, data) => {
 ipcMain.on('terminal-resize', (event, size: { cols: number, rows: number }) => {
   if (sshStream && size && size.cols && size.rows) {
     console.log(`Resizing PTY to ${size.cols}x${size.rows}`);
-    sshStream.setWindow(size.rows, size.cols, 0, 0); // Height/width in pixels usually not needed
+    // Most SSH servers only care about cols and rows for PTY size
+    sshStream.setWindow(size.rows, size.cols, 0, 0);
   }
+});
+
+// Session Management IPC Handlers
+ipcMain.handle('sessions:get', async () => {
+  console.log('IPC: sessions:get received');
+  // Key should be initialized on app 'ready'. If not, something went wrong.
+  // We might add a check here later, but rely on 'ready' handler for now.
+  // if (!secureStorageService['keyInitialized']) {
+  //     console.error("Attempted to get sessions before key was initialized!");
+  //     return []; // Or throw error
+  // }
+  return sessionManagerService.getSessions();
+});
+
+ipcMain.handle('sessions:add', async (event, sessionData) => {
+  console.log('IPC: sessions:add received', sessionData);
+  return sessionManagerService.addSession(sessionData);
+});
+
+ipcMain.handle('sessions:update', async (event, sessionData) => {
+  console.log('IPC: sessions:update received', sessionData);
+  return sessionManagerService.updateSession(sessionData);
+});
+
+ipcMain.handle('sessions:delete', async (event, sessionId) => {
+  console.log('IPC: sessions:delete received', sessionId);
+  return sessionManagerService.deleteSession(sessionId);
+});
+
+// Settings IPC Handlers (Example)
+ipcMain.handle('settings:get', async () => {
+    return secureStorageService.getSettings();
+});
+
+ipcMain.handle('settings:set', async (event, settings) => {
+    secureStorageService.setSettings(settings);
 });

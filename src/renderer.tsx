@@ -6,10 +6,9 @@ import App from './app';
 const rootElement = document.getElementById('root');
 if (rootElement) {
   const root = ReactDOM.createRoot(rootElement);
+  // Remove StrictMode for debugging remount issues
   root.render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>
+    <App />
   );
 } else {
   console.error("Root element 'root' not found in index.html");

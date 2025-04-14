@@ -32,6 +32,11 @@ module.exports = {
           },
         },
       },
+      // Add support for native node modules using node-loader
+      {
+        test: /\.node$/,
+        loader: 'node-loader',
+      },
     ],
   },
   resolve: {

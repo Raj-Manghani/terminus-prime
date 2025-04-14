@@ -11,13 +11,31 @@ html, body, #root {
 
 .app-container {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100vh; /* Full viewport height */
+  width: 100vw;
+  min-width: 0;
+}
+
+.session-sidebar {
+  width: 260px;
+  min-width: 200px;
+  max-width: 320px;
+  flex-shrink: 0;
+  background: #23272e;
+  border-right: 1px solid #333;
+  overflow-y: auto;
+  z-index: 2;
 }
 
 .terminal-container {
-  flex-grow: 1; /* Allow terminal to fill available space */
+  flex: 1 1 0%;
+  min-width: 0;
   overflow: hidden; /* Prevent scrollbars on the container */
+  display: flex;
+  flex-direction: column;
+  background: #1e1e1e;
+  z-index: 1;
 }
 
 /* Ensure xterm takes full height within its container */
