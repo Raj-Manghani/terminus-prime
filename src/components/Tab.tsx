@@ -30,6 +30,7 @@ const Tab: React.FC<TabProps> = ({
       <TerminalView
         tabId={id} // Pass the tab's unique ID
         session={session} // Pass the tab's session data (can be null)
+        isActive={isActive} // Pass the isActive prop
         // isConnected and reconnectTrigger are managed internally by TerminalView
       />
       {/* The placeholder logic is now moved inside TerminalView */}

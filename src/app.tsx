@@ -53,7 +53,8 @@ function App() {
     }
   };
 
-  // Handler for connecting to a session (now opens/switches tabs, reuses empty active tab)
+  // Handler for connecting to a session (now opens/switches tabs)
+  // Handler for connecting to a session (now opens/switches tabs or uses active empty tab)
   const handleConnect = (session: SessionProfile) => {
     console.log('App: handleConnect called with', session);
 
@@ -63,61 +64,63 @@ function App() {
     if (existingTab) {
       console.log(`App: Session ${session.name} already open in tab ${existingTab.id}. Switching to tab.`);
       setActiveTabId(existingTab.id);
-      // Close password prompt if it was open (though unlikely here)
+      // Close password prompt if it was open
       setShowPasswordPrompt(false);
       setPassword('');
       setPendingSession(null);
+
     } else {
-      // No existing tab for this session, prompt for password
-      // We will decide whether to reuse the active tab or create a new one in handlePasswordSubmit
-      console.log(`App: No existing tab for session ${session.name}. Prompting for password.`);
-      setPendingSession(session);
-      setShowPasswordPrompt(true);
+      // Check if the active tab is currently empty
+      const activeTab = tabs.find(tab => tab.id === activeTabId);
+      if (activeTab && !activeTab.session) {
+        console.log(`App: Active tab ${activeTabId} is empty. Will connect session here.`);
+        // Open password prompt to fill the active empty tab
+        setPendingSession(session);
+        setShowPasswordPrompt(true);
+      } else {
+        console.log(`App: No existing tab for session ${session.name} and active tab is not empty. Opening password prompt for new tab.`);
+        // Open password prompt for a new connection (which will create a new tab on submit)
+        setPendingSession(session);
+        setShowPasswordPrompt(true);
+      }
     }
   };
 
   // Handler for submitting the session password prompt
   const handlePasswordSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!pendingSession) return;
+    if (pendingSession) {
+      console.log('App: handlePasswordSubmit for', pendingSession, 'with password', password);
 
-    console.log('App: handlePasswordSubmit for', pendingSession, 'with password', password);
+      const activeTab = tabs.find(tab => tab.id === activeTabId);
 
-    const activeTab = tabs.find(tab => tab.id === activeTabId);
-    const canReuseActiveTab = activeTab && activeTab.session === null;
+      if (activeTab && !activeTab.session) {
+        // Update the active empty tab with the session and password
+        console.log(`App: Updating active empty tab ${activeTabId} with session.`);
+        setTabs(prevTabs =>
+          prevTabs.map(tab =>
+            tab.id === activeTabId
+              ? { ...tab, title: pendingSession.name || pendingSession.host || 'New Tab', session: { ...pendingSession, password } }
+              : tab
+          )
+        );
+      } else {
+        // Create a new tab with the session and password (fallback if active tab wasn't empty or no active tab)
+        console.log('App: Creating a new tab for session.');
+        const newTabId = uuidv4();
+        const newTab: AppTab = {
+          id: newTabId,
+          title: pendingSession.name || pendingSession.host || 'New Tab', // Use session name or host as title
+          session: { ...pendingSession, password }, // Include password for this tab's connection
+        };
+        setTabs(prevTabs => [...prevTabs, newTab]);
+        setActiveTabId(newTabId); // Make the new tab active
+      }
 
-    if (canReuseActiveTab) {
-      // Reuse the active empty tab
-      console.log(`App: Reusing active empty tab ${activeTabId} for session ${pendingSession.name}`);
-      setTabs(prevTabs =>
-        prevTabs.map(tab =>
-          tab.id === activeTabId
-            ? {
-                ...tab,
-                title: pendingSession.name || pendingSession.host || 'Session',
-                session: { ...pendingSession, password }, // Assign session + password
-              }
-            : tab
-        )
-      );
-      // Active tab ID remains the same
-    } else {
-      // Create a new tab
-      console.log(`App: Creating new tab for session ${pendingSession.name}`);
-      const newTabId = uuidv4();
-      const newTab: AppTab = {
-        id: newTabId,
-        title: pendingSession.name || pendingSession.host || 'Session',
-        session: { ...pendingSession, password },
-      };
-      setTabs(prevTabs => [...prevTabs, newTab]);
-      setActiveTabId(newTabId); // Make the new tab active
+      setShowPasswordPrompt(false);
+      setPassword('');
+      setPendingSession(null);
     }
-
-    // Reset prompt state
-    setShowPasswordPrompt(false);
-    setPassword('');
-    setPendingSession(null);
   };
 
   // Handler for canceling the session password prompt (remains the same)
@@ -137,36 +140,24 @@ function App() {
   // Handler for closing a tab
   const handleTabClose = (tabId: string) => {
     console.log('App: Closing tab:', tabId);
-
-    // Send disconnect signal *before* removing the tab from state
-    console.log(`App: Sending disconnect for tab ID ${tabId}`);
-    ipcRenderer.send('terminal-disconnect', tabId);
-
     setTabs(prevTabs => {
       const updatedTabs = prevTabs.filter(tab => tab.id !== tabId);
-
-      if (updatedTabs.length === 0) {
-        // If last tab was closed, create a new empty placeholder tab
-        console.log("App: Last tab closed, creating placeholder tab.");
-        const newPlaceholderTabId = uuidv4();
-        const placeholderTab: AppTab = {
-          id: newPlaceholderTabId,
-          title: 'New Tab',
-          session: null,
-        };
-        setActiveTabId(newPlaceholderTabId); // Activate the placeholder
-        return [placeholderTab]; // Return array with only the placeholder
-      } else {
-        // If the closed tab was active, activate the next or previous tab
-        if (activeTabId === tabId) {
-          const closedTabIndex = prevTabs.findIndex(tab => tab.id === tabId);
-          // Find the best candidate to activate (prefer right, then left)
-          const newActiveTab = updatedTabs[closedTabIndex] || updatedTabs[closedTabIndex - 1];
-          setActiveTabId(newActiveTab.id); // Activate the chosen tab
-        }
-        return updatedTabs; // Return the remaining tabs
+      // If the closed tab was active, activate the next or previous tab
+      if (activeTabId === tabId) {
+        const closedTabIndex = prevTabs.findIndex(tab => tab.id === tabId);
+        const newActiveTab = updatedTabs[closedTabIndex] || updatedTabs[closedTabIndex - 1] || null;
+        setActiveTabId(newActiveTab ? newActiveTab.id : null);
       }
+      return updatedTabs;
     });
+    // Send disconnect signal to main process for this tab's session
+    const tabToClose = tabs.find(tab => tab.id === tabId);
+    if (tabToClose?.session?.id) {
+        console.log(`App: Sending disconnect for tab ID ${tabId}`);
+        ipcRenderer.send('terminal-disconnect', tabId); // Send the tabId to disconnect
+    } else {
+        console.log(`App: Closing tab ${tabId} with no active session.`);
+    }
   };
 
   // Handler for clicking the "New Tab" button

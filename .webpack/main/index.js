@@ -39072,16 +39072,18 @@ electron_1.ipcMain.on('terminal-connect', (event, { tabId, config }) => {
     });
 });
 electron_1.ipcMain.on('terminal-data', (event, { tabId, data }) => {
-    if (!isUnlocked)
+    if (!isUnlocked) {
+        console.warn(`[${tabId}] Received terminal-data event while app is locked. Ignoring.`);
         return; // Ignore if locked
-    console.log(`[${tabId}] Received terminal-data event with data: ${JSON.stringify(data)}`); // Log received data
+    }
+    console.log(`[${tabId}] Received terminal-data event from renderer. Data: ${JSON.stringify(data)}`); // Log received data from renderer
     const conn = activeConnections.get(tabId);
     if (conn && conn.stream && conn.stream.writable) {
-        console.log(`[${tabId}] Writing data to stream.`);
+        console.log(`[${tabId}] Writing data to SSH stream.`);
         conn.stream.write(data);
     }
     else {
-        console.warn(`[${tabId}] Cannot write data: No active/writable stream found. Connection:`, conn); // Log connection state
+        console.warn(`[${tabId}] Cannot write data to SSH stream: No active/writable stream found for this tab. Connection state:`, conn); // Log connection state
     }
 });
 electron_1.ipcMain.on('terminal-resize', (event, { tabId, size }) => {
