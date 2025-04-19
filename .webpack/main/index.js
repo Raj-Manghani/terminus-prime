@@ -38234,24 +38234,23 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.secureStorageService = void 0;
 const electron_store_1 = __importDefault(__webpack_require__(/*! electron-store */ "./node_modules/electron-store/index.js"));
 const crypto_1 = __importDefault(__webpack_require__(/*! crypto */ "crypto"));
-// const SERVICE_NAME = 'TerminusPrime';
-// const KEYCHAIN_ACCOUNT = 'MasterEncryptionKey';
-const PBKDF2_ITERATIONS = 100000; // Iterations for PBKDF2
+const PBKDF2_ITERATIONS = 100000;
+const ENCRYPTION_CHECK_PLAINTEXT = "TERMINUS_PRIME_CHECK_STRING_v1"; // Constant string for verification
 class SecureStorageService {
     constructor() {
-        this.encryptionKey = null; // Holds the master AES key (32 bytes)
+        this.encryptionKey = null;
         this.keyInitialized = false;
         this.store = new electron_store_1.default({
             defaults: {
                 settings: { theme: 'default-dark' },
                 sessions: undefined,
-                pbkdf2Salt: undefined, // Initialize salt if not present
+                pbkdf2Salt: undefined,
+                encryptionCheck: undefined,
             },
         });
         console.log('SecureStorageService initialized.');
     }
     // --- Key Management ---
-    // Method 1: Derive key from master password using PBKDF2
     deriveKeyFromPassword(password) {
         console.log('Deriving encryption key from password using PBKDF2...');
         let saltHex = this.store.get('pbkdf2Salt');
@@ -38277,56 +38276,93 @@ class SecureStorageService {
             });
         });
     }
-    // Method 2: Use OS Keychain (Commented out)
-    /*
-    private async getKeyFromKeychain(): Promise<Buffer | null> { ... }
-    private async generateAndStoreKeyInKeychain(): Promise<Buffer> { ... }
-    */
-    // Initialize key using password derivation
+    // Initialize and *verify* key using password derivation and check string
     async initializeEncryptionKey(password) {
         if (!password) {
             console.error("Master password is required for key initialization.");
             return false;
         }
-        if (this.keyInitialized)
-            return true;
-        console.log('Initializing encryption key using password derivation...');
+        // Don't return early if already initialized, always verify password attempt
+        // if (this.keyInitialized) return true;
+        console.log('Initializing and verifying encryption key using password...');
+        let derivedKey;
         try {
-            const key = await this.deriveKeyFromPassword(password);
-            this.encryptionKey = key;
-            this.keyInitialized = true;
-            console.log('Encryption key initialized successfully.');
-            return true;
+            derivedKey = await this.deriveKeyFromPassword(password);
         }
         catch (error) {
-            console.error('Failed to initialize encryption key:', error);
+            console.error('Failed to derive encryption key:', error);
             this.keyInitialized = false;
             this.encryptionKey = null;
+            return false; // Derivation failed
+        }
+        // --- Verification Step ---
+        const storedCheck = this.store.get('encryptionCheck');
+        let currentKeyIsValid = false;
+        if (storedCheck) {
+            // Attempt to decrypt the check string with the derived key
+            console.log('Found existing encryption check string. Verifying password...');
+            const decryptedCheck = this.decryptDataInternal(storedCheck, derivedKey); // Use internal decrypt that takes key
+            if (decryptedCheck === ENCRYPTION_CHECK_PLAINTEXT) {
+                console.log('Password verified successfully.');
+                currentKeyIsValid = true;
+            }
+            else {
+                console.warn('Password verification failed: Decrypted check string does not match.');
+                // Do not set the key or initialized status
+            }
+        }
+        else {
+            // First run (or check string missing) - Assume password is correct for the first time
+            console.log('No encryption check string found. Assuming first run or reset.');
+            const newCheckEncrypted = this.encryptDataInternal(ENCRYPTION_CHECK_PLAINTEXT, derivedKey); // Use internal encrypt
+            if (newCheckEncrypted) {
+                this.store.set('encryptionCheck', newCheckEncrypted);
+                console.log('Stored new encryption check string.');
+                currentKeyIsValid = true; // Trust the first password
+            }
+            else {
+                console.error('Failed to encrypt initial check string!');
+                // Key derivation worked, but encrypt failed - critical error
+            }
+        }
+        // Set state only if verification passed
+        if (currentKeyIsValid) {
+            this.encryptionKey = derivedKey;
+            this.keyInitialized = true;
+            console.log('Encryption key initialized and verified.');
+            return true;
+        }
+        else {
+            this.encryptionKey = null;
+            this.keyInitialized = false;
+            console.error('Password verification failed.');
             return false;
         }
     }
-    // --- Encryption/Decryption (Remains the same) ---
-    encryptData(data) {
-        if (!this.keyInitialized || !this.encryptionKey) {
-            console.error('Encryption key not initialized.');
+    // --- Encryption/Decryption ---
+    // Internal version for check string, taking key directly
+    encryptDataInternal(data, key) {
+        if (!key) {
+            console.error('Internal Encrypt: No key provided.');
             return null;
         }
         try {
             const iv = crypto_1.default.randomBytes(12);
-            const cipher = crypto_1.default.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
+            const cipher = crypto_1.default.createCipheriv('aes-256-gcm', key, iv);
             let encrypted = cipher.update(data, 'utf8', 'hex');
             encrypted += cipher.final('hex');
             const authTag = cipher.getAuthTag();
             return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
         }
         catch (error) {
-            console.error('Encryption failed:', error);
+            console.error('Internal Encryption failed:', error);
             return null;
         }
     }
-    decryptData(encryptedData) {
-        if (!this.keyInitialized || !this.encryptionKey) {
-            console.error('Encryption key not initialized.');
+    // Internal version for check string, taking key directly
+    decryptDataInternal(encryptedData, key) {
+        if (!key) {
+            console.error('Internal Decrypt: No key provided.');
             return null;
         }
         try {
@@ -38336,18 +38372,34 @@ class SecureStorageService {
             const [ivHex, authTagHex, encryptedHex] = parts;
             const iv = Buffer.from(ivHex, 'hex');
             const authTag = Buffer.from(authTagHex, 'hex');
-            const decipher = crypto_1.default.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
+            const decipher = crypto_1.default.createDecipheriv('aes-256-gcm', key, iv);
             decipher.setAuthTag(authTag);
             let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
             decrypted += decipher.final('utf8');
             return decrypted;
         }
         catch (error) {
-            console.error('Decryption failed:', error);
+            // Decryption errors are expected with wrong key, less verbose logging
+            // console.error('Internal Decryption failed:', error);
             return null;
         }
     }
-    // --- Session Data (Remains the same) ---
+    // Public versions use the initialized instance key
+    encryptData(data) {
+        if (!this.keyInitialized || !this.encryptionKey) {
+            console.error('Encrypt Error: Key not initialized.');
+            return null;
+        }
+        return this.encryptDataInternal(data, this.encryptionKey);
+    }
+    decryptData(encryptedData) {
+        if (!this.keyInitialized || !this.encryptionKey) {
+            console.error('Decrypt Error: Key not initialized.');
+            return null;
+        }
+        return this.decryptDataInternal(encryptedData, this.encryptionKey);
+    }
+    // --- Session Data ---
     saveEncryptedSessions(sessions) {
         if (!this.keyInitialized) {
             console.error("Cannot save sessions: encryption key not initialized.");
@@ -38380,14 +38432,15 @@ class SecureStorageService {
                 console.log('No saved sessions found.');
                 return [];
             }
+            // Decryption now implicitly verifies the key is correct for this data
             const decryptedString = this.decryptData(encryptedSessions);
             if (decryptedString) {
                 console.log('Sessions decrypted successfully.');
                 return JSON.parse(decryptedString);
             }
             else {
-                console.error('Failed to decrypt sessions.');
-                return null;
+                console.error('Failed to decrypt sessions (likely wrong key/password).');
+                return null; // Indicate failure
             }
         }
         catch (error) {
@@ -38395,7 +38448,7 @@ class SecureStorageService {
             return null;
         }
     }
-    // --- Settings (Remains the same) ---
+    // --- Settings ---
     getSettings() {
         return this.store.get('settings');
     }
@@ -38846,7 +38899,7 @@ var exports = __webpack_exports__;
   \*********************/
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-const electron_1 = __webpack_require__(/*! electron */ "electron");
+const electron_1 = __webpack_require__(/*! electron */ "electron"); // Add dialog
 const ssh2_1 = __webpack_require__(/*! ssh2 */ "./node_modules/ssh2/lib/index.js");
 const SecureStorageService_1 = __webpack_require__(/*! ./services/SecureStorageService */ "./src/services/SecureStorageService.ts"); // Import storage service
 const SessionManagerService_1 = __webpack_require__(/*! ./services/SessionManagerService */ "./src/services/SessionManagerService.ts"); // Import session service
@@ -38854,12 +38907,25 @@ const SessionManagerService_1 = __webpack_require__(/*! ./services/SessionManage
 if (__webpack_require__(/*! electron-squirrel-startup */ "./node_modules/electron-squirrel-startup/index.js")) {
     electron_1.app.quit();
 }
-// !!! TEMPORARY - Replace with a proper password prompt/handling mechanism !!!
-const TEMP_MASTER_PASSWORD = "password";
-// !!! --- !!!
+// No hardcoded password needed now
 let mainWindow;
-let sshClient = null;
-let sshStream = null;
+// let sshClient: Client | null = null; // Remove single client
+// let sshStream: any = null; // Remove single stream
+let isUnlocked = false; // Track if the app/storage is unlocked
+const activeConnections = new Map();
+// Helper to clean up a connection
+const cleanupConnection = (tabId) => {
+    var _a, _b;
+    const conn = activeConnections.get(tabId);
+    if (conn) {
+        console.log(`Cleaning up connection for tab ${tabId}`);
+        (_a = conn.stream) === null || _a === void 0 ? void 0 : _a.end(); // End the stream first
+        (_b = conn.client) === null || _b === void 0 ? void 0 : _b.end(); // Then end the client
+        activeConnections.delete(tabId);
+        console.log(`Connection removed for tab ${tabId}. Remaining: ${activeConnections.size}`);
+    }
+};
+// --- End Multiple Connections ---
 const createWindow = () => {
     mainWindow = new electron_1.BrowserWindow({
         width: 1024,
@@ -38868,34 +38934,30 @@ const createWindow = () => {
             nodeIntegration: true,
             contextIsolation: false,
         },
+        // Optionally hide the window until unlocked
+        // show: false,
     });
     mainWindow.loadURL('http://localhost:3111/main_window');
     mainWindow.webContents.openDevTools();
+    // Optionally show window only after unlock signal from main process
+    // ipcMain.on('app:unlocked', () => {
+    //   mainWindow?.show();
+    // });
     mainWindow.on('closed', () => {
-        if (sshStream)
-            sshStream.end();
-        if (sshClient)
-            sshClient.end();
-        sshClient = null;
-        sshStream = null;
+        // Clean up all active connections on main window close
+        console.log("Main window closed. Cleaning up all active connections...");
+        activeConnections.forEach((_, tabId) => {
+            cleanupConnection(tabId);
+        });
         mainWindow = null;
+        isUnlocked = false; // Reset lock state on close
     });
 };
-// App Initialization
-electron_1.app.on('ready', async () => {
-    console.log('App ready, initializing services...');
-    // Initialize encryption key using password derivation
-    const keyInitialized = await SecureStorageService_1.secureStorageService.initializeEncryptionKey(TEMP_MASTER_PASSWORD);
-    if (!keyInitialized) {
-        // Handle key initialization failure (e.g., show error dialog)
-        console.error("FATAL: Could not initialize encryption key. Exiting.");
-        // TODO: Show an error message to the user before quitting
-        electron_1.app.quit();
-        return;
-    }
-    // Load sessions now that the key is ready
-    await SessionManagerService_1.sessionManagerService.loadSessions();
-    // Create the main window
+// App Initialization - Defer service init until unlock
+electron_1.app.on('ready', () => {
+    console.log('App ready. Creating window...');
+    // Create the window immediately, it will show the password prompt.
+    // Key initialization and session loading happen *after* unlock.
     createWindow();
 });
 electron_1.app.on('window-all-closed', () => {
@@ -38909,109 +38971,180 @@ electron_1.app.on('activate', () => {
     }
 });
 // --- IPC Handlers ---
-// SSH Connection Handling (existing)
-electron_1.ipcMain.on('terminal-connect', (event, config) => {
-    console.log('Received terminal-connect request:', config);
-    if (!config || !config.host || !config.username || !config.password) {
-        console.error('Invalid connection config received:', config);
-        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { status: 'error', message: 'Invalid connection details.' });
+// App Unlock Handler
+electron_1.ipcMain.handle('app:unlock', async (event, password) => {
+    console.log('IPC: app:unlock received');
+    if (isUnlocked) {
+        console.log("App already unlocked.");
+        return true; // Already unlocked
+    }
+    if (!password) {
+        console.error("Unlock attempt without password.");
+        return false; // No password provided
+    }
+    const keyInitialized = await SecureStorageService_1.secureStorageService.initializeEncryptionKey(password);
+    if (!keyInitialized) {
+        console.error("Key initialization failed (likely incorrect password or storage error).");
+        return false; // Signal failure to renderer
+    }
+    // Load sessions now that the key is ready
+    await SessionManagerService_1.sessionManagerService.loadSessions();
+    isUnlocked = true;
+    console.log("App unlocked successfully (key initialized).");
+    return true; // Signal success to renderer
+});
+// SSH Connection Handling (Refactored for Multiple Connections)
+electron_1.ipcMain.on('terminal-connect', (event, { tabId, config }) => {
+    if (!isUnlocked) {
+        console.error(`[${tabId}] Attempted to connect while app is locked.`);
+        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'error', message: 'Application is locked.' });
         return;
     }
-    if (sshClient) {
-        console.log('SSH client already exists, ending previous connection.');
-        sshStream === null || sshStream === void 0 ? void 0 : sshStream.end();
-        sshClient.end(); // End previous client
-        sshClient = null;
-        sshStream = null;
+    console.log(`[${tabId}] Received terminal-connect request:`, config);
+    if (!tabId || !config || !config.host || !config.username || !config.password) {
+        console.error(`[${tabId}] Invalid connection config received:`, { tabId, config });
+        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'error', message: 'Invalid connection details or missing tabId.' });
+        return;
     }
-    sshClient = new ssh2_1.Client();
-    sshClient.on('ready', () => {
-        console.log('SSH Client :: ready');
-        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { status: 'connected', message: 'SSH connection established.' });
-        sshClient === null || sshClient === void 0 ? void 0 : sshClient.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
+    // Clean up any existing connection for this tabId first
+    if (activeConnections.has(tabId)) {
+        console.log(`[${tabId}] Cleaning up existing connection before reconnecting.`);
+        cleanupConnection(tabId);
+    }
+    const client = new ssh2_1.Client();
+    const connection = {
+        client: client,
+        stream: null,
+        status: 'connecting',
+    };
+    activeConnections.set(tabId, connection);
+    console.log(`[${tabId}] Connection entry created. Total connections: ${activeConnections.size}`);
+    client.on('ready', () => {
+        console.log(`[${tabId}] SSH Client :: ready`);
+        connection.status = 'connected'; // Update status
+        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'connected', message: 'SSH connection established.' });
+        console.log(`[${tabId}] SSH Client :: Requesting shell...`);
+        client.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
+            console.log(`[${tabId}] SSH Client :: Shell callback received.`);
             if (err) {
-                console.error('SSH Shell Error:', err);
-                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { status: 'error', message: `Shell error: ${err.message}` });
-                sshClient === null || sshClient === void 0 ? void 0 : sshClient.end();
-                sshClient = null;
+                console.error(`[${tabId}] SSH Shell Error:`, err);
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'error', message: `Shell error: ${err.message}` });
+                cleanupConnection(tabId); // Clean up on shell error
                 return;
             }
-            sshStream = stream;
-            console.log('SSH Stream :: ready');
-            sshStream.on('data', (data) => {
-                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-incoming-data', data.toString('utf-8'));
+            connection.stream = stream; // Store the stream
+            console.log(`[${tabId}] SSH Stream :: ready`);
+            stream.on('data', (data) => {
+                const dataString = data.toString('utf-8');
+                console.log(`[${tabId}] SSH Stream :: data received, attempting to send to renderer. Length: ${data.length}`); // Log before send
+                // console.log(`[${tabId}] Data content: ${JSON.stringify(dataString)}`); // Optional: Log content
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-incoming-data', { tabId, data: dataString });
             }).stderr.on('data', (data) => {
-                console.error('SSH STDERR:', data.toString('utf-8'));
-                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-incoming-data', `\x1b[31m${data.toString('utf-8')}\x1b[0m`);
+                const dataString = data.toString('utf-8');
+                console.error(`[${tabId}] SSH STDERR:`, dataString);
+                console.log(`[${tabId}] SSH Stream :: stderr received, attempting to send to renderer. Length: ${data.length}`); // Log before send
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-incoming-data', { tabId, data: `\x1b[31m${dataString}\x1b[0m` });
             });
-            sshStream.on('close', () => {
-                console.log('SSH Stream :: close');
-                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { status: 'disconnected', message: 'Shell closed.' });
-                sshClient === null || sshClient === void 0 ? void 0 : sshClient.end(); // Ensure client is ended when stream closes
-                sshClient = null;
-                sshStream = null;
+            stream.on('close', () => {
+                console.log(`[${tabId}] SSH Stream :: close`);
+                mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'disconnected', message: 'Shell closed.' });
+                cleanupConnection(tabId); // Clean up when stream closes
             });
+            console.log(`[${tabId}] SSH Stream :: data, stderr, close listeners set up.`);
         });
     }).on('error', (err) => {
-        console.error('SSH Client Error:', err);
-        mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { status: 'error', message: `Connection error: ${err.message}` });
-        sshClient = null;
-        sshStream = null;
-    }).on('close', () => {
-        console.log('SSH Client :: close');
-        if (sshStream) { // Check if stream existed before sending status
-            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { status: 'disconnected', message: 'Connection closed.' });
-            sshStream = null;
+        console.error(`[${tabId}] SSH Client Error:`, err);
+        // Avoid sending duplicate 'disconnected' if it's a connection close error
+        if (connection.status !== 'disconnected') {
+            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'error', message: `Connection error: ${err.message}` });
         }
-        sshClient = null; // Ensure client is nullified on close
+        cleanupConnection(tabId); // Clean up on client error
+    }).on('close', () => {
+        console.log(`[${tabId}] SSH Client :: close`);
+        // Check if cleanup already happened (e.g., via stream close or error)
+        if (activeConnections.has(tabId)) {
+            mainWindow === null || mainWindow === void 0 ? void 0 : mainWindow.webContents.send('terminal-status', { tabId, status: 'disconnected', message: 'Connection closed.' });
+            cleanupConnection(tabId); // Ensure cleanup on client close
+        }
     }).connect({
-        host: config.host,
-        port: config.port || 22,
-        username: config.username,
-        password: config.password, // Password provided at runtime
-        readyTimeout: 20000
+        host: config.host, port: config.port || 22, username: config.username,
+        password: config.password, readyTimeout: 20000
     });
 });
-electron_1.ipcMain.on('terminal-data', (event, data) => {
-    if (sshStream && sshStream.writable) {
-        sshStream.write(data);
+electron_1.ipcMain.on('terminal-data', (event, { tabId, data }) => {
+    if (!isUnlocked)
+        return; // Ignore if locked
+    console.log(`[${tabId}] Received terminal-data event with data: ${JSON.stringify(data)}`); // Log received data
+    const conn = activeConnections.get(tabId);
+    if (conn && conn.stream && conn.stream.writable) {
+        console.log(`[${tabId}] Writing data to stream.`);
+        conn.stream.write(data);
+    }
+    else {
+        console.warn(`[${tabId}] Cannot write data: No active/writable stream found. Connection:`, conn); // Log connection state
     }
 });
-electron_1.ipcMain.on('terminal-resize', (event, size) => {
-    if (sshStream && size && size.cols && size.rows) {
-        console.log(`Resizing PTY to ${size.cols}x${size.rows}`);
-        // Most SSH servers only care about cols and rows for PTY size
-        sshStream.setWindow(size.rows, size.cols, 0, 0);
+electron_1.ipcMain.on('terminal-resize', (event, { tabId, size }) => {
+    if (!isUnlocked)
+        return; // Ignore if locked
+    const conn = activeConnections.get(tabId);
+    if (conn && conn.stream && size && size.cols && size.rows) {
+        console.log(`[${tabId}] Resizing PTY to ${size.cols}x${size.rows}`);
+        conn.stream.setWindow(size.rows, size.cols, 0, 0); // Use the stream from the specific connection
     }
+    else {
+        console.warn(`[${tabId}] Cannot resize PTY: No active stream found or invalid size.`);
+    }
+});
+// Add handler for explicit disconnection
+electron_1.ipcMain.on('terminal-disconnect', (event, tabId) => {
+    if (!isUnlocked)
+        return; // Ignore if locked
+    console.log(`[${tabId}] Received terminal-disconnect request.`);
+    cleanupConnection(tabId);
 });
 // Session Management IPC Handlers
 electron_1.ipcMain.handle('sessions:get', async () => {
+    if (!isUnlocked) {
+        console.error("Attempted to get sessions while locked.");
+        return []; // Return empty if locked
+    }
     console.log('IPC: sessions:get received');
-    // Key should be initialized on app 'ready'. If not, something went wrong.
-    // We might add a check here later, but rely on 'ready' handler for now.
-    // if (!secureStorageService['keyInitialized']) {
-    //     console.error("Attempted to get sessions before key was initialized!");
-    //     return []; // Or throw error
-    // }
     return SessionManagerService_1.sessionManagerService.getSessions();
 });
 electron_1.ipcMain.handle('sessions:add', async (event, sessionData) => {
+    if (!isUnlocked) {
+        console.error("Attempted to add session while locked.");
+        throw new Error("Application is locked.");
+    }
     console.log('IPC: sessions:add received', sessionData);
     return SessionManagerService_1.sessionManagerService.addSession(sessionData);
 });
 electron_1.ipcMain.handle('sessions:update', async (event, sessionData) => {
+    if (!isUnlocked) {
+        console.error("Attempted to update session while locked.");
+        throw new Error("Application is locked.");
+    }
     console.log('IPC: sessions:update received', sessionData);
     return SessionManagerService_1.sessionManagerService.updateSession(sessionData);
 });
 electron_1.ipcMain.handle('sessions:delete', async (event, sessionId) => {
+    if (!isUnlocked) {
+        console.error("Attempted to delete session while locked.");
+        throw new Error("Application is locked.");
+    }
     console.log('IPC: sessions:delete received', sessionId);
     return SessionManagerService_1.sessionManagerService.deleteSession(sessionId);
 });
 // Settings IPC Handlers (Example)
 electron_1.ipcMain.handle('settings:get', async () => {
+    if (!isUnlocked)
+        return {}; // Return empty settings if locked
     return SecureStorageService_1.secureStorageService.getSettings();
 });
 electron_1.ipcMain.handle('settings:set', async (event, settings) => {
+    if (!isUnlocked)
+        throw new Error("Application is locked.");
     SecureStorageService_1.secureStorageService.setSettings(settings);
 });
 

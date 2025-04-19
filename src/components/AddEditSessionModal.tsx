@@ -49,13 +49,18 @@ const AddEditSessionModal: React.FC<AddEditSessionModalProps> = ({
     };
 
     try {
-      // Here we would call the appropriate IPC handler (add or update)
-      // For now, we only implement add via onSave prop
-      if (isEditing) {
-        // TODO: Implement update logic (needs session ID)
-        console.warn("Update functionality not implemented yet.");
+      if (isEditing && sessionToEdit) {
+        // This is an update - include the original ID
+        const updatedSessionData: StoredSessionProfile = {
+           ...sessionData,
+           id: sessionToEdit.id, // Include the original ID
+        };
+        await onSave(updatedSessionData); // Call onSave with updated data
+        console.log("Update functionality called with:", updatedSessionData);
       } else {
+        // This is a new session - onSave will call sessions:add
         await onSave(sessionData);
+        console.log("Add functionality called with:", sessionData);
       }
       onClose(); // Close modal on successful save
     } catch (err) {

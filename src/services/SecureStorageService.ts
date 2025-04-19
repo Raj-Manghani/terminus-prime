@@ -1,25 +1,23 @@
 import Store from 'electron-store';
 import crypto from 'crypto';
-// import keytar from 'keytar'; // Remove keytar import
+// import keytar from 'keytar'; // Keytar removed
 
-// Define a schema for electron-store (optional but good practice)
+// Define a schema for electron-store
 interface AppSchema {
   settings: {
     theme?: string;
-    // Add other non-sensitive settings here
   };
-  sessions?: string; // Encrypted session data as a single string blob
-  // Store salt for password derivation (unique per installation)
-  pbkdf2Salt?: string;
+  sessions?: string; // Encrypted session data
+  pbkdf2Salt?: string; // Salt for key derivation
+  encryptionCheck?: string; // Encrypted check string to verify password
 }
 
-// const SERVICE_NAME = 'TerminusPrime';
-// const KEYCHAIN_ACCOUNT = 'MasterEncryptionKey';
-const PBKDF2_ITERATIONS = 100000; // Iterations for PBKDF2
+const PBKDF2_ITERATIONS = 100000;
+const ENCRYPTION_CHECK_PLAINTEXT = "TERMINUS_PRIME_CHECK_STRING_v1"; // Constant string for verification
 
 class SecureStorageService {
   private store: Store<AppSchema>;
-  private encryptionKey: Buffer | null = null; // Holds the master AES key (32 bytes)
+  private encryptionKey: Buffer | null = null;
   private keyInitialized: boolean = false;
 
   constructor() {
@@ -27,7 +25,8 @@ class SecureStorageService {
       defaults: {
         settings: { theme: 'default-dark' },
         sessions: undefined,
-        pbkdf2Salt: undefined, // Initialize salt if not present
+        pbkdf2Salt: undefined,
+        encryptionCheck: undefined,
       },
     });
     console.log('SecureStorageService initialized.');
@@ -35,7 +34,6 @@ class SecureStorageService {
 
   // --- Key Management ---
 
-  // Method 1: Derive key from master password using PBKDF2
   private deriveKeyFromPassword(password: string): Promise<Buffer> {
     console.log('Deriving encryption key from password using PBKDF2...');
     let saltHex = (this.store as any).get('pbkdf2Salt');
@@ -62,73 +60,123 @@ class SecureStorageService {
     });
   }
 
-  // Method 2: Use OS Keychain (Commented out)
-  /*
-  private async getKeyFromKeychain(): Promise<Buffer | null> { ... }
-  private async generateAndStoreKeyInKeychain(): Promise<Buffer> { ... }
-  */
-
-  // Initialize key using password derivation
+  // Initialize and *verify* key using password derivation and check string
   public async initializeEncryptionKey(password: string): Promise<boolean> {
     if (!password) {
-        console.error("Master password is required for key initialization.");
-        return false;
+      console.error("Master password is required for key initialization.");
+      return false;
     }
-    if (this.keyInitialized) return true;
-    console.log('Initializing encryption key using password derivation...');
+    // Don't return early if already initialized, always verify password attempt
+    // if (this.keyInitialized) return true;
+
+    console.log('Initializing and verifying encryption key using password...');
+    let derivedKey: Buffer;
     try {
-      const key = await this.deriveKeyFromPassword(password);
-      this.encryptionKey = key;
-      this.keyInitialized = true;
-      console.log('Encryption key initialized successfully.');
-      return true;
+      derivedKey = await this.deriveKeyFromPassword(password);
     } catch (error) {
-      console.error('Failed to initialize encryption key:', error);
+      console.error('Failed to derive encryption key:', error);
       this.keyInitialized = false;
       this.encryptionKey = null;
+      return false; // Derivation failed
+    }
+
+    // --- Verification Step ---
+    const storedCheck = (this.store as any).get('encryptionCheck');
+    let currentKeyIsValid = false;
+
+    if (storedCheck) {
+      // Attempt to decrypt the check string with the derived key
+      console.log('Found existing encryption check string. Verifying password...');
+      const decryptedCheck = this.decryptDataInternal(storedCheck, derivedKey); // Use internal decrypt that takes key
+      if (decryptedCheck === ENCRYPTION_CHECK_PLAINTEXT) {
+        console.log('Password verified successfully.');
+        currentKeyIsValid = true;
+      } else {
+        console.warn('Password verification failed: Decrypted check string does not match.');
+        // Do not set the key or initialized status
+      }
+    } else {
+      // First run (or check string missing) - Assume password is correct for the first time
+      console.log('No encryption check string found. Assuming first run or reset.');
+      const newCheckEncrypted = this.encryptDataInternal(ENCRYPTION_CHECK_PLAINTEXT, derivedKey); // Use internal encrypt
+      if (newCheckEncrypted) {
+        (this.store as any).set('encryptionCheck', newCheckEncrypted);
+        console.log('Stored new encryption check string.');
+        currentKeyIsValid = true; // Trust the first password
+      } else {
+        console.error('Failed to encrypt initial check string!');
+        // Key derivation worked, but encrypt failed - critical error
+      }
+    }
+
+    // Set state only if verification passed
+    if (currentKeyIsValid) {
+      this.encryptionKey = derivedKey;
+      this.keyInitialized = true;
+      console.log('Encryption key initialized and verified.');
+      return true;
+    } else {
+      this.encryptionKey = null;
+      this.keyInitialized = false;
+      console.error('Password verification failed.');
       return false;
     }
   }
 
-  // --- Encryption/Decryption (Remains the same) ---
+  // --- Encryption/Decryption ---
 
+  // Internal version for check string, taking key directly
+  private encryptDataInternal(data: string, key: Buffer): string | null {
+     if (!key) { console.error('Internal Encrypt: No key provided.'); return null; }
+     try {
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        let encrypted = cipher.update(data, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag();
+        return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
+     } catch (error) {
+        console.error('Internal Encryption failed:', error); return null;
+     }
+  }
+
+  // Internal version for check string, taking key directly
+  private decryptDataInternal(encryptedData: string, key: Buffer): string | null {
+     if (!key) { console.error('Internal Decrypt: No key provided.'); return null; }
+     try {
+        const parts = encryptedData.split(':');
+        if (parts.length !== 3) throw new Error('Invalid encrypted data format');
+        const [ivHex, authTagHex, encryptedHex] = parts;
+        const iv = Buffer.from(ivHex, 'hex');
+        const authTag = Buffer.from(authTagHex, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+     } catch (error) {
+        // Decryption errors are expected with wrong key, less verbose logging
+        // console.error('Internal Decryption failed:', error);
+        return null;
+     }
+  }
+
+  // Public versions use the initialized instance key
   public encryptData(data: string): string | null {
     if (!this.keyInitialized || !this.encryptionKey) {
-      console.error('Encryption key not initialized.'); return null;
+      console.error('Encrypt Error: Key not initialized.'); return null;
     }
-    try {
-      const iv = crypto.randomBytes(12);
-      const cipher = crypto.createCipheriv('aes-256-gcm', this.encryptionKey, iv);
-      let encrypted = cipher.update(data, 'utf8', 'hex');
-      encrypted += cipher.final('hex');
-      const authTag = cipher.getAuthTag();
-      return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted}`;
-    } catch (error) {
-      console.error('Encryption failed:', error); return null;
-    }
+    return this.encryptDataInternal(data, this.encryptionKey);
   }
 
   public decryptData(encryptedData: string): string | null {
     if (!this.keyInitialized || !this.encryptionKey) {
-      console.error('Encryption key not initialized.'); return null;
+      console.error('Decrypt Error: Key not initialized.'); return null;
     }
-    try {
-      const parts = encryptedData.split(':');
-      if (parts.length !== 3) throw new Error('Invalid encrypted data format');
-      const [ivHex, authTagHex, encryptedHex] = parts;
-      const iv = Buffer.from(ivHex, 'hex');
-      const authTag = Buffer.from(authTagHex, 'hex');
-      const decipher = crypto.createDecipheriv('aes-256-gcm', this.encryptionKey, iv);
-      decipher.setAuthTag(authTag);
-      let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      return decrypted;
-    } catch (error) {
-      console.error('Decryption failed:', error); return null;
-    }
+    return this.decryptDataInternal(encryptedData, this.encryptionKey);
   }
 
-  // --- Session Data (Remains the same) ---
+  // --- Session Data ---
 
   public saveEncryptedSessions(sessions: any[]): void {
     if (!this.keyInitialized) {
@@ -158,19 +206,21 @@ class SecureStorageService {
       if (!encryptedSessions) {
         console.log('No saved sessions found.'); return [];
       }
+      // Decryption now implicitly verifies the key is correct for this data
       const decryptedString = this.decryptData(encryptedSessions);
       if (decryptedString) {
         console.log('Sessions decrypted successfully.');
         return JSON.parse(decryptedString);
       } else {
-        console.error('Failed to decrypt sessions.'); return null;
+        console.error('Failed to decrypt sessions (likely wrong key/password).');
+        return null; // Indicate failure
       }
     } catch (error) {
       console.error('Error loading sessions:', error); return null;
     }
   }
 
-  // --- Settings (Remains the same) ---
+  // --- Settings ---
 
   public getSettings(): AppSchema['settings'] {
     return (this.store as any).get('settings');
