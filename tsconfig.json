@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "jsx": "react-jsx",
     "target": "ES2018", // Target modern ECMAScript features supported by recent Electron
     "module": "CommonJS", // Output CommonJS modules, suitable for Electron main/preload
     "jsx": "react", // Process JSX for React

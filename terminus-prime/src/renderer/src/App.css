@@ -1,0 +1,20 @@
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; /* Prevent scrollbars on body if App fills viewport */
+  background-color: #1e1e1e; /* Match terminal background for seamless look */
+}
+
+.App {
+  /* No specific styles needed here if using inline styles for flex in App.tsx */
+  /* text-align: center; */ /* Original, but might not be needed */
+}
+
+.App-header h1 {
+  /* Any specific styles for the h1 if needed */
+}
+
+.App-content {
+  /* This ensures that if TerminalView itself doesn't cause overflow, this container won't either */
+}
