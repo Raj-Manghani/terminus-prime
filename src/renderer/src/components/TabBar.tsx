@@ -1,16 +1,15 @@
 import React from 'react';
 import Tab from './Tab';
-// Assuming TabData is exported from App.tsx or a shared types file.
-// App.tsx exports AppTabData which is compatible with TabDataFromRenderer.
-import type { AppTabData } from '../App';
+// Assuming App.tsx will export TabData type, or it's in a shared types file
+import type { TabData } from '../App';
 
 interface TabBarProps {
-  tabs: AppTabData[]; // Use the Tab type from App.tsx
+  tabs: TabData[];
   activeTabId: string | null;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onAddTab: () => void;
-  onDetachTab?: (tabId: string) => void;
+  onDetachTab?: (tabId: string) => void; // Optional as detached windows won't pass it
 }
 
 const TabBar: React.FC<TabBarProps> = ({
@@ -19,18 +18,15 @@ const TabBar: React.FC<TabBarProps> = ({
   onSelectTab,
   onCloseTab,
   onAddTab,
-  onDetachTab
+  onDetachTab // Correctly destructured as part of the first props object
 }) => {
   return (
     <div style={{
-      display: 'flex',
-      alignItems: 'flex-end',
-      backgroundColor: '#2a2d35',
-      padding: '5px 5px 0 5px',
-      borderBottom: '1px solid #555',
-      flexShrink: 0,
-      overflowX: 'auto',
-      overflowY: 'hidden',
+        display: 'flex', alignItems: 'flex-end',
+        backgroundColor: '#2a2d35', padding: '5px 5px 0 5px',
+        borderBottom: '1px solid #555',
+        minHeight: '40px',
+        boxSizing: 'border-box'
     }}>
       {tabs.map(tab => (
         <Tab
@@ -40,24 +36,28 @@ const TabBar: React.FC<TabBarProps> = ({
           isActive={tab.id === activeTabId}
           onSelectTab={onSelectTab}
           onCloseTab={onCloseTab}
-          onDetachTab={onDetachTab ? () => onDetachTab(tab.id) : undefined}
+          onDetachTab={onDetachTab} // Pass it down to Tab component
         />
       ))}
       <button
         onClick={onAddTab}
         style={{
-          padding: '6px 10px',
-          marginLeft: '5px',
+          padding: '0px 8px',
+          marginLeft: '4px',
           marginBottom: '0px',
-          background: '#555',
-          border: '1px solid #666',
+          background: '#4CAF50',
+          border: '1px solid #388E3C',
           color: 'white',
           cursor: 'pointer',
           borderTopLeftRadius: '4px',
           borderTopRightRadius: '4px',
-          height: '37px',
-          alignSelf: 'flex-start',
-          lineHeight: 'normal',
+          fontSize: '1.2em',
+          height: '32px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          alignSelf: 'flex-end',
+          lineHeight: '1',
         }}
         title="New Tab"
       >
