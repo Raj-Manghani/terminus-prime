@@ -1,91 +1,69 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
 
-// Structures from main process for type safety.
-// In a monorepo or with shared types, these could be imported directly.
-export interface SessionProfile {
-  id: string; name: string; host: string; port: number; username: string;
-  authMethod: 'password' | 'key' | 'agent';
-  password?: string; privateKeyPath?: string; notes?: string;
-  createdAt: string; updatedAt: string;
-}
+// Re-define types here for clarity and independence, or use a shared types package
+export interface SshConnectionDetails { host: string; port: number; username: string; password?: string; privateKey?: string; passphrase?: string; }
+export interface TerminalInstance { id: string; sshConnectionArgs?: SshConnectionDetails; sshStatus: string; title: string; }
+export interface PaneData { id: string; type: 'terminal' | 'split'; direction?: 'horizontal' | 'vertical'; children?: PaneData[]; terminalInstanceId?: string; size?: number | string; }
+export interface TabDataFromRenderer { id: string; title: string; rootPane: PaneData; activeTerminalInstanceId: string | null; containedTerminalInstances: TerminalInstance[]; }
+export interface SessionProfile { id: string; name: string; host: string; port: number; username: string; authMethod: 'password' | 'key' | 'agent'; password?: string; privateKeyPath?: string; notes?: string; createdAt: string; updatedAt: string; }
 export type SessionProfileCreateData = Omit<SessionProfile, 'id' | 'createdAt' | 'updatedAt'>;
 export type SessionProfileUpdateData = Partial<SessionProfileCreateData>;
-
-// For master key setting response
-export interface SetMasterKeyResult {
-  success: boolean;
-  saltHex?: string; // Returned if keytar storage fails but derivation succeeds
-}
-
-
-// --- SSH Service related types (assuming they were defined similarly or inline) ---
-export interface SshConnectionArgs { host: string; port: number; username: string; password?: string; }
-export interface SshStatusArgs { windowId: number; status: string; message: string; } // Matched to existing ssh:status
-export interface SshDataIPCArgs { windowId: number; data: string; } // Matched to existing ssh:data
-export interface SshResizeArgs { cols: number; rows: number; height: number; width: number; }
+export interface SetMasterKeyResult { success: boolean; saltHex?: string; }
+export interface SshStatusIPCArgs { terminalInstanceId: string; windowId: number; status: string; message: string; }
+export interface SshDataIPCArgs { terminalInstanceId: string; windowId: number; data: string; }
 
 export interface ElectronAPI {
-  // SSH Service
-  onSshData: (callback: (data: string) => void) => (() => void);
-  onSshStatus: (callback: (status: SshStatusArgs) => void) => (() => void);
-  sshConnect: (args: SshConnectionArgs) => void;
-  sshDisconnect: () => void;
-  sshSendData: (data: string) => void;
-  sshResize: (args: SshResizeArgs) => void;
-  pingSsh: () => void; // Renamed from 'ping' to avoid conflict if generic ping exists
+  onSshData: (callback: (event: SshDataIPCArgs) => void) => (() => void);
+  onSshStatus: (callback: (event: SshStatusIPCArgs) => void) => (() => void);
+  sshConnect: (args: { terminalInstanceId: string; details: SshConnectionDetails }) => void;
+  sshDisconnect: (args: { terminalInstanceId: string }) => void;
+  sshSendData: (args: { terminalInstanceId: string; data: string }) => void;
+  sshResize: (args: { terminalInstanceId: string; cols: number; rows: number; height: number; width: number }) => void;
+  pingSsh: () => void; // Renamed from 'ping'
 
-  // Session Management
   loadSessions: () => Promise<SessionProfile[]>;
   getSessionById: (id: string) => Promise<SessionProfile | undefined>;
   addSession: (profileData: SessionProfileCreateData) => Promise<SessionProfile | null>;
   updateSession: (id: string, updates: SessionProfileUpdateData) => Promise<SessionProfile | null>;
   deleteSession: (id: string) => Promise<boolean>;
 
-  // SecureStorage / Master Key
   isMasterKeySet: () => Promise<boolean>;
   setMasterKeyFromPassword: (password: string, storeInKeytar?: boolean) => Promise<SetMasterKeyResult>;
   checkKeytarStatus: () => Promise<'available' | 'unavailable' | 'error'>;
   generateAndStoreMasterKey: () => Promise<boolean>;
   clearMasterKey: () => void;
+
+  requestDetachTab: (tabDataSnapshot: TabDataFromRenderer) => void;
+  onWindowReadyForDetachedData: (callback: (tabData: TabDataFromRenderer) => void) => (() => void);
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  // SSH Service
-  onSshData: (callback) => {
-    const handler = (_event: IpcRendererEvent, args: SshDataIPCArgs) => callback(args.data);
-    ipcRenderer.on('ssh:data', handler);
-    return () => ipcRenderer.removeListener('ssh:data', handler);
-  },
-  onSshStatus: (callback) => {
-    const handler = (_event: IpcRendererEvent, status: SshStatusArgs) => callback(status);
-    ipcRenderer.on('ssh:status', handler);
-    return () => ipcRenderer.removeListener('ssh:status', handler);
-  },
-  sshConnect: (args: SshConnectionArgs) => ipcRenderer.send('ssh:connect', args),
-  sshDisconnect: () => ipcRenderer.send('ssh:disconnect'),
-  sshSendData: (data: string) => ipcRenderer.send('ssh:data-input', { data }),
-  sshResize: (args: SshResizeArgs) => ipcRenderer.send('ssh:resize', args),
-  pingSsh: () => ipcRenderer.send('ping'), // Assuming 'ping' was the channel for SSH ping
+  onSshData: (cb) => { const h = (_e: IpcRendererEvent, a: SshDataIPCArgs) => cb(a); ipcRenderer.on('ssh:data', h); return () => ipcRenderer.removeListener('ssh:data', h); },
+  onSshStatus: (cb) => { const h = (_e: IpcRendererEvent, s: SshStatusIPCArgs) => cb(s); ipcRenderer.on('ssh:status', h); return () => ipcRenderer.removeListener('ssh:status', h); },
+  sshConnect: (a) => ipcRenderer.send('ssh:connect', a),
+  sshDisconnect: (a) => ipcRenderer.send('ssh:disconnect', a),
+  sshSendData: (a) => ipcRenderer.send('ssh:data-input', a),
+  sshResize: (a) => ipcRenderer.send('ssh:resize', a),
+  pingSsh: () => ipcRenderer.send('ping'), // Ensure main handles 'ping'
 
-  // Session Management
   loadSessions: () => ipcRenderer.invoke('sessions:load'),
-  getSessionById: (id: string) => ipcRenderer.invoke('session:get-by-id', { id }),
-  addSession: (profileData: SessionProfileCreateData) => ipcRenderer.invoke('session:add', { profileData }),
-  updateSession: (id: string, updates: SessionProfileUpdateData) => ipcRenderer.invoke('session:update', { id, updates }),
-  deleteSession: (id: string) => ipcRenderer.invoke('session:delete', { id }),
-
-  // SecureStorage / Master Key
+  getSessionById: (id) => ipcRenderer.invoke('session:get-by-id', { id }),
+  addSession: (pD) => ipcRenderer.invoke('session:add', { profileData: pD }),
+  updateSession: (id, u) => ipcRenderer.invoke('session:update', { id, updates: u }),
+  deleteSession: (id) => ipcRenderer.invoke('session:delete', { id }),
   isMasterKeySet: () => ipcRenderer.invoke('masterkey:is-set'),
-  setMasterKeyFromPassword: (password: string, storeInKeytar: boolean = true) => ipcRenderer.invoke('masterkey:set-from-password', { password, storeInKeytar }),
+  setMasterKeyFromPassword: (p, sIK) => ipcRenderer.invoke('masterkey:set-from-password', { password: p, storeInKeytar: sIK }),
   checkKeytarStatus: () => ipcRenderer.invoke('masterkey:check-keytar'),
   generateAndStoreMasterKey: () => ipcRenderer.invoke('masterkey:generate-and-store'),
   clearMasterKey: () => ipcRenderer.send('masterkey:clear'),
+
+  requestDetachTab: (tds) => ipcRenderer.send('window:request-detach-tab', tds),
+  onWindowReadyForDetachedData: (callback) => {
+    const handler = (_event: IpcRendererEvent, tabData: TabDataFromRenderer) => callback(tabData);
+    ipcRenderer.on('window:here-is-your-detached-data', handler);
+    ipcRenderer.send('window:detached-renderer-ready');
+    return () => ipcRenderer.removeListener('window:here-is-your-detached-data', handler);
+  },
 });
-
-console.log('Preload script with extended ElectronAPI (SSH, Session Management, Master Key) loaded.');
-
-declare global {
-  interface Window {
-    electronAPI: ElectronAPI;
-  }
-}
+declare global { interface Window { electronAPI: ElectronAPI; } }
+console.log('Preload script (v5 - detachable tabs API) loaded.');

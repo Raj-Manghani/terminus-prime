@@ -18,3 +18,90 @@ html, body, #root {
 .App-content {
   /* This ensures that if TerminalView itself doesn't cause overflow, this container won't either */
 }
+
+/* Collapsible Sidebar Styles */
+.sidebar {
+  /* Default width is managed by .sidebar.open or .sidebar.closed */
+  /* background-color: #2a2d35; /* Already set inline in App.tsx */
+  /* color: white; */ /* Already set inline in App.tsx */
+  /* border-right: 1px solid #555; */ /* Already set inline in App.tsx */
+  display: flex;
+  flex-direction: column;
+  transition: width 0.25s ease-in-out, padding 0.25s ease-in-out, border 0.25s ease-in-out;
+  overflow-x: hidden; /* Hide content horizontally during transition */
+  overflow-y: auto; /* Allow vertical scroll if content overflows */
+  padding: 0px; /* Base padding, can be overridden by open/closed */
+  flex-shrink: 0;
+}
+
+.sidebar.open {
+  width: 250px;
+  /* padding-top: 0px; /* Example if specific padding needed when open */
+  border-right: 1px solid #555; /* Show border when open */
+}
+
+.sidebar.closed {
+  width: 0px;
+  padding-left: 0;
+  padding-right: 0;
+  border-right: none;
+}
+
+/* Hide SessionListView content when sidebar is closed and width is 0 to prevent text overflow issues */
+.sidebar.closed > * {
+  visibility: hidden;
+}
+
+.sidebar-toggle-btn {
+  background-color: #4a4a4a;
+  color: white;
+  border: 1px solid #555;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 0.9em;
+  margin-right: 10px;
+}
+.sidebar-toggle-btn:hover {
+  background-color: #5a5a5a;
+}
+
+/* Ensure App-body flex settings are appropriate */
+.App-body {
+  display: flex;
+  flex-grow: 1;
+  overflow: hidden; /* Critical for controlling layout */
+}
+
+.App-content {
+  flex-grow: 1;
+  display: flex; /* For PaneView to take full height */
+  flex-direction: column; /* For PaneView to take full height */
+  /* background-color: #1e1e1e; /* Already set inline */
+  overflow: hidden; /* Critical */
+}
+
+.App-header-controls input {
+    padding: 6px;
+    font-size: 0.9em;
+    border-radius: 3px;
+    border: 1px solid #555;
+    background-color: #3a3a3c;
+    color: white;
+}
+.App-header-controls button {
+    padding: 6px 10px;
+    font-size: 0.9em;
+    border-radius: 3px;
+    border: 1px solid #555;
+    background-color: #4a4a4a;
+    color: white;
+    cursor: pointer;
+}
+.App-header-controls button:hover {
+    background-color: #5a5a5a;
+}
+.App-header-controls button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

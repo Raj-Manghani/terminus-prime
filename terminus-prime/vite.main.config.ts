@@ -6,6 +6,8 @@ export default defineConfig({
     rollupOptions: {
       external: [
         'ssh2',
+        'keytar',
+        'argon2', // Added argon2 to externals
         // Add other modules that should be externalized here if needed
       ],
     },
