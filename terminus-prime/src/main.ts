@@ -1,6 +1,15 @@
+import { SecureStorageService } from './main/secureStorageService';
+import { SessionManagerService } from './main/sessionManagerService';
 import { SshService } from './main/sshService';
 import { app, BrowserWindow, shell, ipcMain } from 'electron';
 import path from 'node:path';
+
+// Append command line switches before app is ready
+// These are for running in headless/virtualized environments
+app.commandLine.appendSwitch('disable-gpu');
+app.commandLine.appendSwitch('no-sandbox'); // Often used with disable-gpu in CI
+// Potentially also: app.commandLine.appendSwitch('in-process-gpu');
+// Potentially also: app.commandLine.appendSwitch('disable-dev-shm-usage');
 
 // Note: @electron-toolkit/utils (is, electronApp, optimizer) are not installed by default
 // by the electron-forge vite template. If these utilities are desired,
@@ -22,7 +31,7 @@ function createWindow(): void {
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'), // Path from original Forge template
-      sandbox: false,
+      sandbox: false, // Setting sandbox:false here. The no-sandbox flag is more global.
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -49,6 +58,58 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  // --- Session Management IPC Handlers ---
+  ipcMain.handle("sessions:load", async () => {
+    try { return await SessionManagerService.getAllSessions(); }
+    catch (e) { console.error("IPC sessions:load error:", e); return []; }
+  });
+
+  ipcMain.handle("session:get-by-id", async (_event, { id }) => {
+    try { return await SessionManagerService.getSessionById(id); }
+    catch (e) { console.error(`IPC session:get-by-id error for id ${id}:`, e); return undefined; }
+  });
+
+  ipcMain.handle("session:add", async (_event, { profileData }) => {
+    try { return await SessionManagerService.addSession(profileData); }
+    catch (e) { console.error("IPC session:add error:", e); return null; }
+  });
+
+  ipcMain.handle("session:update", async (_event, { id, updates }) => {
+    try { return await SessionManagerService.updateSession(id, updates); }
+    catch (e) { console.error(`IPC session:update error for id ${id}:`, e); return null; }
+  });
+
+  ipcMain.handle("session:delete", async (_event, { id }) => {
+    try { return await SessionManagerService.deleteSession(id); }
+    catch (e) { console.error(`IPC session:delete error for id ${id}:`, e); return false; }
+  });
+
+  // --- SecureStorageService / Master Key IPC Handlers ---
+  ipcMain.handle("masterkey:is-set", async () => {
+    try { return SecureStorageService.isMasterKeyAvailable(); }
+    catch (e) { console.error("IPC masterkey:is-set error:", e); return false; }
+  });
+
+  ipcMain.handle("masterkey:set-from-password", async (_event, { password, storeInKeytar }) => {
+    try { return await SecureStorageService.setMasterKeyWithPassword(password, storeInKeytar); }
+    catch (e) { console.error("IPC masterkey:set-from-password error:", e); return {success: false}; }
+  });
+
+  ipcMain.handle("masterkey:check-keytar", async () => {
+    try { return await SecureStorageService.checkKeytarStatus(); }
+    catch (e) { console.error("IPC masterkey:check-keytar error:", e); return 'error'; }
+  });
+
+  ipcMain.handle("masterkey:generate-and-store", async () => {
+    try { return await SecureStorageService.generateAndStoreMasterKey(); }
+    catch (e) { console.error("IPC masterkey:generate-and-store error:", e); return false; }
+  });
+
+  ipcMain.on("masterkey:clear", () => { // Use .on for void returns
+    try { SecureStorageService.clearInMemoryMasterKey(); SessionManagerService.invalidateCache(); }
+    catch (e) { console.error("IPC masterkey:clear error:", e); }
+  });
+
   // IPC Handlers for SSH Service
   ipcMain.on("ssh:connect", async (event, args) => {
     const window = BrowserWindow.fromWebContents(event.sender);
