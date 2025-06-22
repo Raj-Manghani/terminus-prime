@@ -21,9 +21,16 @@ interface TerminalViewProps {
   onResize?: (cols: number, rows: number, height: number, width: number) => void;
   dataToDisplay?: string;
   clearTrigger?: number;
+  triggerFit?: number; // New prop to trigger fit
 }
 
-const TerminalView: React.FC<TerminalViewProps> = React.memo(({ onData, onResize, dataToDisplay, clearTrigger }) => {
+const TerminalView: React.FC<TerminalViewProps> = React.memo(({
+  onData,
+  onResize,
+  dataToDisplay,
+  clearTrigger,
+  triggerFit // Destructure new prop
+}) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -41,7 +48,7 @@ const TerminalView: React.FC<TerminalViewProps> = React.memo(({ onData, onResize
     }
   }, [onResize]);
 
-  useEffect(() => {
+  useEffect(() => { // Initialize terminal
     if (terminalRef.current && !termInstanceRef.current) {
       const term = new Terminal(terminalOptions);
       const fitAddon = new FitAddon();
@@ -49,24 +56,40 @@ const TerminalView: React.FC<TerminalViewProps> = React.memo(({ onData, onResize
       term.loadAddon(fitAddon);
       try { new WebglAddon().activate(term); } catch (e) { console.warn('WebGL addon failed.', e); }
       term.open(terminalRef.current);
-      fitAddon.fit();
+      // fitAddon.fit(); // Initial fit can be handled by ResizeObserver or triggerFit
       term.onData(onData);
 
       const parentEl = terminalRef.current.parentElement;
-      if (parentEl && onResize) {
+      if (parentEl && onResize) { // Only observe if onResize is provided
         const obs = new ResizeObserver(fitAndNotifyResize);
         obs.observe(parentEl); resizeObserverRef.current = obs;
-        setTimeout(fitAndNotifyResize, 50);
+        setTimeout(fitAndNotifyResize, 50); // Initial resize call
       }
       return () => {
         resizeObserverRef.current?.disconnect(); term.dispose();
         termInstanceRef.current = null; fitAddonRef.current = null;
       };
     }
-  }, [onData, onResize, fitAndNotifyResize]);
+  }, [onData, onResize, fitAndNotifyResize]); // Main init effect dependencies
 
-  useEffect(() => { if (termInstanceRef.current && dataToDisplay !== undefined) termInstanceRef.current.write(dataToDisplay); }, [dataToDisplay]);
-  useEffect(() => { if (termInstanceRef.current && clearTrigger !== undefined && clearTrigger > 0) termInstanceRef.current.clear(); }, [clearTrigger]);
+  useEffect(() => { // Handle incoming data
+    if (termInstanceRef.current && dataToDisplay !== undefined) {
+      termInstanceRef.current.write(dataToDisplay);
+    }
+  }, [dataToDisplay]);
+
+  useEffect(() => { // Handle clear trigger
+    if (termInstanceRef.current && clearTrigger !== undefined && clearTrigger > 0) {
+      termInstanceRef.current.clear();
+    }
+  }, [clearTrigger]);
+
+  useEffect(() => { // Handle external fit trigger
+    if (triggerFit && triggerFit > 0 && fitAddonRef.current) {
+      // console.log('TerminalView: fit triggered by prop change', triggerFit);
+      fitAddonRef.current.fit();
+    }
+  }, [triggerFit]);
 
   return <div ref={terminalRef} style={{ width: '100%', height: '100%', backgroundColor: termTheme.background }} />;
 });

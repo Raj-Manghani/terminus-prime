@@ -6,7 +6,7 @@ interface TabProps {
   isActive: boolean;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
-  onDetachTab?: (tabId: string) => void; // Optional for main window tabs
+  onDetachTab?: (tabId: string) => void; // Optional: not available in detached windows
 }
 
 const Tab: React.FC<TabProps> = ({ id, title, isActive, onSelectTab, onCloseTab, onDetachTab }) => {
@@ -26,33 +26,43 @@ const Tab: React.FC<TabProps> = ({ id, title, isActive, onSelectTab, onCloseTab,
     <div
       onClick={() => onSelectTab(id)}
       style={{
-        padding: '8px 12px', marginRight: '2px', borderBottom: 'none',
-        border: isActive ? '1px solid #555' : '1px solid #2a2d35',
-        borderBottomColor: isActive ? 'transparent' : '#555',
-        backgroundColor: isActive ? '#1e1e1e' : '#333',
-        color: isActive ? 'white' : '#ccc', cursor: 'pointer', display: 'flex',
-        alignItems: 'center', minWidth: '120px', maxWidth: '220px',
-        borderTopLeftRadius: '4px', borderTopRightRadius: '4px',
-        position: 'relative', top: isActive ? '1px' : '0px',
-        zIndex: isActive ? 2 : 1,
-        boxShadow: isActive ? '0 -2px 5px rgba(0,0,0,0.1)' : 'none',
+        padding: '8px 12px',
+        marginRight: '2px',
+        border: isActive ? '1px solid #555' : '1px solid #333', // Corrected border color for inactive
+        borderBottom: isActive ? 'none' : '1px solid #555', // Match active tab style for border-bottom
+        backgroundColor: isActive ? '#4a4a4a' : '#333', // Active tab slightly lighter
+        color: isActive ? 'white' : '#ccc',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        minWidth: '100px',
+        maxWidth: '200px',
+        borderTopLeftRadius: '4px',
+        borderTopRightRadius: '4px',
+        userSelect: 'none',
       }}
       title={title}
     >
-      <span style={{ flexGrow: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginRight: '5px' }}>
+      <span style={{ flexGrow: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {title}
       </span>
-      {onDetachTab && ( // Conditionally render detach button
+      {onDetachTab && (
         <button
           onClick={handleDetach}
           style={{
-            marginLeft: '5px', background: 'none', border: '1px solid #777',
-            color: '#aaa', cursor: 'pointer', padding: '1px 3px',
-            borderRadius: '3px', fontSize: '0.8em', lineHeight: '1'
+            marginLeft: '5px',
+            background: 'none',
+            border: '1px solid #777',
+            color: '#aaa',
+            cursor: 'pointer',
+            padding: '1px 3px',
+            borderRadius: '3px',
+            fontSize: '0.8em',
+            lineHeight: '1',
           }}
           onMouseOver={(e) => { e.currentTarget.style.color = 'white'; e.currentTarget.style.borderColor = '#999'; }}
           onMouseOut={(e) => { e.currentTarget.style.color = '#aaa'; e.currentTarget.style.borderColor = '#777'; }}
-          title="Detach Tab to New Window"
+          title="Detach Tab"
         >
           ❐
         </button>
@@ -60,18 +70,24 @@ const Tab: React.FC<TabProps> = ({ id, title, isActive, onSelectTab, onCloseTab,
       <button
         onClick={handleClose}
         style={{
-          marginLeft: onDetachTab ? '5px' : 'auto', // Adjust margin if detach button is present
-          background: 'none', border: 'none', color: '#aaa', cursor: 'pointer',
-          padding: '2px 4px', borderRadius: '50%', lineHeight: '1', fontSize: '0.9em',
-          width: '18px', height: '18px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          marginLeft: (onDetachTab) ? '5px' : '8px', // Adjusted margin based on detach button presence
+          background: 'none',
+          border: 'none',
+          color: '#aaa',
+          cursor: 'pointer',
+          padding: '2px 4px',
+          borderRadius: '3px', // Consistent with detach button
+          lineHeight: '1',
+          fontSize: '0.9em' // Consistent with detach button icon size context
         }}
-        onMouseOver={(e) => { e.currentTarget.style.backgroundColor = '#555'; e.currentTarget.style.color = 'white';}}
-        onMouseOut={(e) => { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = '#aaa';}}
+        onMouseOver={(e) => e.currentTarget.style.color = 'white'}
+        onMouseOut={(e) => e.currentTarget.style.color = '#aaa'}
         title="Close Tab"
       >
-        &#x2715;
+        X
       </button>
     </div>
   );
 };
+
 export default Tab;

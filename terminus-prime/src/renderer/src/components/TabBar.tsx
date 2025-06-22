@@ -1,11 +1,9 @@
 import React from 'react';
 import Tab from './Tab';
-// Assuming TabData is exported from App.tsx or a shared types file.
-// App.tsx exports AppTabData which is compatible with TabDataFromRenderer.
-import type { AppTabData } from '../App';
+import type { AppTabData } from '../App'; // Changed from TabStateData to AppTabData to match App.tsx export
 
 interface TabBarProps {
-  tabs: AppTabData[]; // Use the Tab type from App.tsx
+  tabs: AppTabData[];
   activeTabId: string | null;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
@@ -40,6 +38,7 @@ const TabBar: React.FC<TabBarProps> = ({
           isActive={tab.id === activeTabId}
           onSelectTab={onSelectTab}
           onCloseTab={onCloseTab}
+          // Pass onDetachTab; Tab component will handle if it's undefined
           onDetachTab={onDetachTab ? () => onDetachTab(tab.id) : undefined}
         />
       ))}
@@ -56,7 +55,7 @@ const TabBar: React.FC<TabBarProps> = ({
           borderTopLeftRadius: '4px',
           borderTopRightRadius: '4px',
           height: '37px',
-          alignSelf: 'flex-start',
+          alignSelf: 'flex-start', // Keep it aligned with tab tops
           lineHeight: 'normal',
         }}
         title="New Tab"
