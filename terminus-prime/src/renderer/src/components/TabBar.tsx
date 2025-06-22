@@ -1,6 +1,7 @@
 import React from 'react';
 import Tab from './Tab';
-import type { AppTabData } from '../App'; // Changed from TabStateData to AppTabData to match App.tsx export
+// Assuming App.tsx exports AppTabData or a compatible type
+import type { AppTabData } from '../App';
 
 interface TabBarProps {
   tabs: AppTabData[];
@@ -29,6 +30,8 @@ const TabBar: React.FC<TabBarProps> = ({
       flexShrink: 0,
       overflowX: 'auto',
       overflowY: 'hidden',
+      minHeight: '42px', // Ensure consistent height with tab content (37px + 5px padding-top)
+      boxSizing: 'border-box',
     }}>
       {tabs.map(tab => (
         <Tab
@@ -38,8 +41,7 @@ const TabBar: React.FC<TabBarProps> = ({
           isActive={tab.id === activeTabId}
           onSelectTab={onSelectTab}
           onCloseTab={onCloseTab}
-          // Pass onDetachTab; Tab component will handle if it's undefined
-          onDetachTab={onDetachTab ? () => onDetachTab(tab.id) : undefined}
+          onDetachTab={onDetachTab} // Pass it down directly
         />
       ))}
       <button
@@ -47,7 +49,7 @@ const TabBar: React.FC<TabBarProps> = ({
         style={{
           padding: '6px 10px',
           marginLeft: '5px',
-          marginBottom: '0px',
+          // marginBottom: '1px', // Match potential lift of active tab
           background: '#555',
           border: '1px solid #666',
           color: 'white',
@@ -55,7 +57,7 @@ const TabBar: React.FC<TabBarProps> = ({
           borderTopLeftRadius: '4px',
           borderTopRightRadius: '4px',
           height: '37px',
-          alignSelf: 'flex-start', // Keep it aligned with tab tops
+          alignSelf: 'flex-end', // Changed to flex-end to align with bottom of tab bar
           lineHeight: 'normal',
         }}
         title="New Tab"
