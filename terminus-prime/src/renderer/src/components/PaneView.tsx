@@ -1,6 +1,6 @@
 import React from 'react';
 import { Allotment } from 'allotment';
-// import 'allotment/dist/style.css'; // Imported in App.tsx
+import 'allotment/dist/style.css';
 import TerminalView from './TerminalView'; // Corrected path
 import type { PaneData, TerminalInstance } from '../App';
 
@@ -11,15 +11,16 @@ interface PaneViewProps {
   onTerminalResize: (terminalInstanceId: string, cols: number, rows: number, height: number, width: number) => void;
   getTerminalDataToDisplay: (terminalInstanceId: string) => string | undefined;
   getTerminalClearTrigger?: (terminalInstanceId: string) => number | undefined;
-  getTriggerFitCount?: (terminalInstanceId: string) => number | undefined; // New prop from App.tsx
+  getTriggerFitCount?: (terminalInstanceId: string) => number | undefined;
   isActivePane: (terminalInstanceId: string | undefined) => boolean;
   onPaneClick: (paneId: string, terminalInstanceId?: string) => void;
+  isUiElementFocused?: boolean; // New prop
 }
 
 const PaneView: React.FC<PaneViewProps> = React.memo(({
   pane, terminalInstances, onTerminalData, onTerminalResize,
-  getTerminalDataToDisplay, getTerminalClearTrigger, getTriggerFitCount, // Destructure new prop
-  isActivePane, onPaneClick,
+  getTerminalDataToDisplay, getTerminalClearTrigger, getTriggerFitCount,
+  isActivePane, onPaneClick, isUiElementFocused // Destructure new prop
 }) => {
   if (pane.type === 'split' && pane.children) {
     return (
@@ -28,8 +29,8 @@ const PaneView: React.FC<PaneViewProps> = React.memo(({
           <Allotment.Pane key={childPane.id} preferredSize={childPane.size || '100%'}>
             <PaneView {...{
                 pane: childPane, terminalInstances, onTerminalData, onTerminalResize,
-                getTerminalDataToDisplay, getTerminalClearTrigger, getTriggerFitCount, // Pass down
-                isActivePane, onPaneClick
+                getTerminalDataToDisplay, getTerminalClearTrigger, getTriggerFitCount,
+                isActivePane, onPaneClick, isUiElementFocused /* Pass down */
             }} />
           </Allotment.Pane>
         ))}
@@ -51,7 +52,8 @@ const PaneView: React.FC<PaneViewProps> = React.memo(({
           onResize={(cols, rows, h, w) => onTerminalResize(terminalInstance.id, cols, rows, h, w)}
           dataToDisplay={getTerminalDataToDisplay(terminalInstance.id)}
           clearTrigger={getTerminalClearTrigger ? getTerminalClearTrigger(terminalInstance.id) : undefined}
-          triggerFit={getTriggerFitCount ? getTriggerFitCount(terminalInstance.id) : undefined} // Pass to TerminalView
+          triggerFit={getTriggerFitCount ? getTriggerFitCount(terminalInstance.id) : undefined}
+          isUiElementFocused={isUiElementFocused} // Pass to TerminalView
         />
       </div>
     );

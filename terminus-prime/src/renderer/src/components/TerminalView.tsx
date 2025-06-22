@@ -22,6 +22,7 @@ interface TerminalViewProps {
   dataToDisplay?: string;
   clearTrigger?: number;
   triggerFit?: number;
+  isUiElementFocused?: boolean; // New prop
 }
 
 const TerminalView: React.FC<TerminalViewProps> = React.memo(({
@@ -29,101 +30,61 @@ const TerminalView: React.FC<TerminalViewProps> = React.memo(({
   onResize,
   dataToDisplay,
   clearTrigger,
-  triggerFit
+  triggerFit,
+  isUiElementFocused // Destructure new prop
 }) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const termInstanceRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const webglAddonRef = useRef<WebglAddon | null>(null); // Ref for WebGL addon
+  const webglAddonRef = useRef<WebglAddon | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
-  const fitAndNotifyResize = useCallback(() => {
+  const fitAndNotifyResize = useCallback(() => { /* ... as before ... */
     if (fitAddonRef.current && termInstanceRef.current && terminalRef.current) {
-      try {
-        fitAddonRef.current.fit();
-        const { cols, rows } = termInstanceRef.current;
-        if (cols > 0 && rows > 0 && onResize) {
-          onResize(cols, rows, terminalRef.current.clientHeight, terminalRef.current.clientWidth);
-        }
+      try { fitAddonRef.current.fit(); const { cols, rows } = termInstanceRef.current; if (cols > 0 && rows > 0 && onResize) { onResize(cols, rows, terminalRef.current.clientHeight, terminalRef.current.clientWidth); }
       } catch (e) { console.error("TerminalView: Error fitting/notifying resize:", e); }
     }
   }, [onResize]);
 
   useEffect(() => { // Initialize terminal
-    let term: Terminal | null = null; // To use in cleanup only if successfully created
-    let fitAddonInst: FitAddon | null = null;
-    let webglAddonInst: WebglAddon | null = null;
-    let obs: ResizeObserver | null = null;
-
+    let term: Terminal | null = null;
     if (terminalRef.current && !termInstanceRef.current) {
-      console.log("TerminalView: Initializing new xterm instance.");
       term = new Terminal(terminalOptions);
-      fitAddonInst = new FitAddon();
+      // ... (rest of init logic as in Subtask 24) ...
+      termInstanceRef.current = term; const fitAddon = new FitAddon(); fitAddonRef.current = fitAddon; term.loadAddon(fitAddon);
+      try { const webgl = new WebglAddon(); term.loadAddon(webgl); webglAddonRef.current = webgl; } catch (e) { console.warn('WebGL addon failed.', e); }
+      term.open(terminalRef.current); fitAddon.fit();
 
-      termInstanceRef.current = term;
-      fitAddonRef.current = fitAddonInst;
-      term.loadAddon(fitAddonInst);
-
-      try {
-        webglAddonInst = new WebglAddon();
-        term.loadAddon(webglAddonInst);
-        webglAddonRef.current = webglAddonInst; // Store in ref
-        console.log("TerminalView: WebGL addon loaded.");
-      }
-      catch (e) { console.warn('TerminalView: WebGL addon failed to load.', e); }
-
-      term.open(terminalRef.current);
-      fitAddonInst.fit();
-      term.onData(onData);
+      term.onData((dataFromTerm) => { // Modified onData handler
+        if (isUiElementFocused) {
+          // console.log("TerminalView: UI has focus, ignoring input to terminal's onData callback.");
+          return;
+        }
+        if (onData) onData(dataFromTerm);
+      });
 
       const parentEl = terminalRef.current.parentElement;
-      if (parentEl && onResize) {
-        obs = new ResizeObserver(fitAndNotifyResize);
-        obs.observe(parentEl);
-        resizeObserverRef.current = obs;
-        setTimeout(fitAndNotifyResize, 50);
-      }
+      if (parentEl && onResize) { const obs = new ResizeObserver(fitAndNotifyResize); obs.observe(parentEl); resizeObserverRef.current = obs; setTimeout(fitAndNotifyResize, 50); }
     }
-    return () => { // Cleanup on unmount
-      console.log("TerminalView: Cleanup initiated.");
-      resizeObserverRef.current?.disconnect();
-
-      if (webglAddonRef.current) {
-        try { webglAddonRef.current.dispose(); console.log('TerminalView: WebGL addon disposed.'); }
-        catch (e) { console.error('TerminalView: Error disposing WebGL addon:', e); }
-        webglAddonRef.current = null;
-      }
-      if (fitAddonRef.current) {
-        try { fitAddonRef.current.dispose(); console.log('TerminalView: Fit addon disposed.'); }
-        catch (e) { console.error('TerminalView: Error disposing Fit addon:', e); }
-        fitAddonRef.current = null;
-      }
-      if (termInstanceRef.current) { // Check if it was set
-        try { termInstanceRef.current.dispose(); console.log('TerminalView: Terminal instance disposed.'); }
-        catch (e) { console.error('TerminalView: Error disposing terminal instance:', e); }
-        termInstanceRef.current = null;
-      }
-      console.log("TerminalView: Cleanup finished.");
+    return () => { /* ... cleanup logic as in Subtask 24 ... */
+        resizeObserverRef.current?.disconnect();
+        if (webglAddonRef.current) { try { webglAddonRef.current.dispose(); } catch (e) { console.error('Error disposing WebGL addon:', e); } webglAddonRef.current = null; }
+        if (fitAddonRef.current) { try { fitAddonRef.current.dispose(); } catch (e) { console.error('Error disposing Fit addon:', e); } fitAddonRef.current = null; }
+        if (termInstanceRef.current) { try { termInstanceRef.current.dispose(); } catch (e) { console.error('Error disposing terminal instance:', e); } termInstanceRef.current = null; }
     };
-  }, [onData, onResize, fitAndNotifyResize]); // Main init effect dependencies
+  }, [onData, onResize, fitAndNotifyResize, isUiElementFocused]); // Added isUiElementFocused to deps for onData closure
 
-  useEffect(() => { // Handle incoming data
-    if (termInstanceRef.current && dataToDisplay !== undefined) {
-      termInstanceRef.current.write(dataToDisplay);
-    }
+  useEffect(() => { /* ... dataToDisplay effect ... */
+    if (termInstanceRef.current && dataToDisplay !== undefined) termInstanceRef.current.write(dataToDisplay);
   }, [dataToDisplay]);
-
-  useEffect(() => { // Handle clear trigger
-    if (termInstanceRef.current && clearTrigger !== undefined && clearTrigger > 0) {
-      termInstanceRef.current.clear();
-    }
+  useEffect(() => { /* ... clearTrigger effect ... */
+    if (termInstanceRef.current && clearTrigger !== undefined && clearTrigger > 0) termInstanceRef.current.clear();
   }, [clearTrigger]);
-
-  useEffect(() => { // Handle external fit trigger
-    if (triggerFit && triggerFit > 0 && fitAddonRef.current) {
-      // console.log('TerminalView: fit triggered by prop change', triggerFit);
-      try { fitAddonRef.current.fit(); }
-      catch(e) { console.error("TerminalView: Error fitting on triggerFit:", e); }
+  useEffect(() => { /* ... triggerFit effect ... */
+    if (triggerFit && triggerFit > 0 && fitAddonRef.current && termInstanceRef.current?.element) {
+      if (terminalRef.current && terminalRef.current.offsetParent !== null) {
+        try { fitAddonRef.current.fit(); } catch (e) { console.error("TerminalView: Error fitting on triggerFit:", e); }
+      }
     }
   }, [triggerFit]);
 

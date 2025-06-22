@@ -5,29 +5,44 @@ import MasterPasswordModal from './components/MasterPasswordModal';
 import SessionListView from './components/SessionListView';
 import TabBar from './components/TabBar';
 import PaneView from './components/PaneView';
-import type { SessionProfile, SshConnectionDetails as PreloadSshDetails, TabDataFromRenderer, TerminalInstance, PaneData as PreloadPaneData, SetMasterKeyResult } from '../../preload'; // Added SetMasterKeyResult
+import type { SessionProfile, SshConnectionDetails as PreloadSshDetails, PaneData as PreloadPaneData } from '../../preload'; // TabDataFromRenderer removed
+import type { TerminalInstance as PreloadTerminalInstance } from '../../preload';
 import './App.css';
 import 'allotment/dist/style.css';
 
-export type { TerminalInstance } from '../../preload';
-export interface PaneData extends PreloadPaneData {}
-export interface AppTabData extends Omit<TabDataFromRenderer, 'containedTerminalInstances' | 'rootPane'> {
+// Types are now simpler as detach-specific fields are removed
+export interface TerminalInstance extends PreloadTerminalInstance {
+  id: string;
+  sshConnectionArgs?: PreloadSshDetails;
+  sshStatus: string;
+  title: string;
+  fitTriggerCount: number;
+}
+export interface PaneData extends PreloadPaneData {
+  id: string;
+  type: 'terminal' | 'split';
+  terminalInstanceId?: string;
+  children?: PaneData[];
+  direction?: 'horizontal' | 'vertical'; // Added from previous full App.tsx
+  size?: number | string; // Added from previous full App.tsx
+}
+export interface AppTabData { // Simplified from TabStateData, no containedTerminalInstances by default
+  id: string;
+  title: string;
   rootPane: PaneData;
-  // containedTerminalInstances is part of TabDataFromRenderer, not directly stored in AppTabData here
-  // It's constructed on-the-fly for detach.
+  activeTerminalInstanceId: string | null;
 }
 
-const getQueryParam = (param: string): string | null => new URLSearchParams(window.location.search).get(param);
+// getQueryParam REMOVED as isDetachedWindow logic is gone
 
 const App: React.FC = () => {
-  const [isDetachedWindow, setIsDetachedWindow] = useState(false);
+  // isDetachedWindow REMOVED
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-
   const [isMasterPasswordModalOpen, setIsMasterPasswordModalOpen] = useState(false);
   const [masterPasswordMessage, setMasterPasswordMessage] = useState('');
-  const [isSettingNewPasswordDialog, setIsSettingNewPasswordDialog] = useState(false);
+  const [isSettingNewPasswordDialog, setIsSettingNewPasswordDialog] = useState(false); // For modal text
   const [appUnlocked, setAppUnlocked] = useState(false);
-  const [keytarAvailable, setKeytarAvailable] = useState<boolean | null>(null);
+  const [keytarAvailable, setKeytarAvailable] = useState<boolean | null>(null); // For master pwd message
 
   const [formHost, setFormHost] = useState('test.rebex.net');
   const [formPort, setFormPort] = useState('22');
@@ -41,124 +56,102 @@ const App: React.FC = () => {
   const [terminalWriteData, setTerminalWriteData] = useState<{ terminalInstanceId: string, data: string } | null>(null);
   const [terminalClearTrigger, setTerminalClearTrigger] = useState<{ terminalInstanceId: string, trigger: number } | null>(null);
 
+
   const toggleSidebar = () => setIsSidebarOpen(prev => !prev);
+
+  const triggerFitForTerminal = useCallback((terminalInstanceId: string) => {
+    setTerminalInstances(prev => {
+      const inst = prev.get(terminalInstanceId);
+      if (inst) {
+        return new Map(prev).set(terminalInstanceId, { ...inst, fitTriggerCount: (inst.fitTriggerCount || 0) + 1 });
+      }
+      return prev;
+    });
+  }, []);
+
+  const getFitTriggerCount = useCallback((terminalInstanceId: string): number | undefined => {
+    return terminalInstances.get(terminalInstanceId)?.fitTriggerCount;
+  }, [terminalInstances]);
+
+  const collectTerminalIdsRecursive = (pane: PaneData): string[] => {
+    if (pane.type === 'terminal' && pane.terminalInstanceId) return [pane.terminalInstanceId];
+    if (pane.type === 'split' && pane.children) return pane.children.flatMap(collectTerminalIdsRecursive);
+    return [];
+  };
 
   const createNewTerminalInstance = useCallback((sshArgs?: PreloadSshDetails, title?: string): TerminalInstance => {
     const termId = uuidv4();
-    return { id: termId, sshConnectionArgs: sshArgs, sshStatus: 'disconnected', title: title || `Terminal ${terminalInstances.size + 1}`};
+    return { id: termId, sshConnectionArgs: sshArgs, sshStatus: 'disconnected', title: title || `Terminal ${terminalInstances.size + 1}`, fitTriggerCount: 0 };
   }, [terminalInstances.size]);
 
   const createNewTerminalPane = useCallback((instance: TerminalInstance): PaneData => {
     return { id: uuidv4(), type: 'terminal', terminalInstanceId: instance.id, size: '100%' };
   }, []);
 
-  const updateTerminalInstance = useCallback((terminalInstanceId: string, updates: Partial<TerminalInstance>) => {
+  const updateTerminalInstance = useCallback((terminalInstanceId: string, updates: Partial<Omit<TerminalInstance, 'fitTriggerCount'>>) => {
     setTerminalInstances(prevMap => {
         const current = prevMap.get(terminalInstanceId);
-        if (!current) { console.warn(`updateTerminalInstance: instance ${terminalInstanceId} not found.`); return prevMap; }
-        const updatedInstance = { ...current, ...updates };
+        if (!current) return prevMap;
+        const updatedInstance = { ...current, ...updates, fitTriggerCount: current.fitTriggerCount };
         const newMap = new Map(prevMap).set(terminalInstanceId, updatedInstance);
-        setTabs(prevTabs => prevTabs.map(tab => {
-            if (const_collectTerminalIds(tab.rootPane).includes(terminalInstanceId) && tab.activeTerminalInstanceId === terminalInstanceId) {
-                return { ...tab, title: updatedInstance.title };
-            } return tab;
-        }));
+        setTabs(prevTabs => prevTabs.map(tab => (tab.activeTerminalInstanceId === terminalInstanceId) ? { ...tab, title: updatedInstance.title } : tab ));
         return newMap;
     });
   }, []);
 
-  const handleAddTab = useCallback((sessionToConnect?: SessionProfile, isDetachedTabData?: TabDataFromRenderer) => {
-    let initialInstancesToAdd: TerminalInstance[] = [];
-    let rootPaneStructure: PaneData;
-    let tabTitle: string;
-    let newTabActiveTerminalId: string | null = null;
-    const newTabId = isDetachedTabData ? isDetachedTabData.id : uuidv4();
-
-    if (isDetachedTabData) {
-        rootPaneStructure = isDetachedTabData.rootPane;
-        tabTitle = isDetachedTabData.title;
-        initialInstancesToAdd = isDetachedTabData.containedTerminalInstances.map(inst => ({...inst, sshStatus: 'disconnected'}));
-        newTabActiveTerminalId = isDetachedTabData.activeTerminalInstanceId;
-    } else {
-        const instanceDetails = sessionToConnect ? { host: sessionToConnect.host, port: sessionToConnect.port, username: sessionToConnect.username, password: sessionToConnect.password } : undefined;
-        const instanceTitle = sessionToConnect ? `${sessionToConnect.username}@${sessionToConnect.host}` : `Terminal ${tabs.length + 1 + terminalInstances.size}`;
-        const newInstance = createNewTerminalInstance(instanceDetails, instanceTitle);
-        rootPaneStructure = createNewTerminalPane(newInstance);
-        tabTitle = newInstance.title;
-        initialInstancesToAdd.push(newInstance);
-        newTabActiveTerminalId = newInstance.id;
-    }
-    setTerminalInstances(prev => { const newMap = new Map(prev); initialInstancesToAdd.forEach(inst => newMap.set(inst.id, inst)); return newMap; });
-    const newTab: AppTabData = { id: newTabId, title: tabTitle, rootPane: rootPaneStructure, activeTerminalInstanceId: newTabActiveTerminalId };
+  const handleAddTab = useCallback((connectSession?: SessionProfile) => {
+    const { pane: newPane, instance: newInstance } = createNewTerminalPane(
+      connectSession ? { host: connectSession.host, port: connectSession.port, username: connectSession.username, password: connectSession.password } : undefined,
+      connectSession ? `${connectSession.username}@${connectSession.host}` : undefined
+    );
+    const newTabId = uuidv4();
+    const newTab: AppTabData = {
+        id: newTabId, title: newInstance.title, rootPane: newPane, activeTerminalInstanceId: newInstance.id,
+    };
+    setTerminalInstances(prev => new Map(prev).set(newInstance.id, newInstance));
     setTabs(prevTabs => [...prevTabs, newTab]);
     setActiveTabId(newTabId);
-
-    if (sessionToConnect && !isDetachedTabData && initialInstancesToAdd[0]?.sshConnectionArgs) {
-      updateTerminalInstance(initialInstancesToAdd[0].id, { sshStatus: 'connecting' });
-      window.electronAPI.sshConnect({ terminalInstanceId: initialInstancesToAdd[0].id, details: initialInstancesToAdd[0].sshConnectionArgs });
-    } else if (isDetachedTabData && appUnlocked) { // appUnlocked check added
-        initialInstancesToAdd.forEach(inst => {
-            if (inst.sshConnectionArgs) {
-                updateTerminalInstance(inst.id, { sshStatus: 'connecting' });
-                window.electronAPI.sshConnect({terminalInstanceId: inst.id, details: inst.sshConnectionArgs});
-            }
-        });
+    if (connectSession && newInstance.sshConnectionArgs) {
+        window.electronAPI.sshConnect({ terminalInstanceId: newInstance.id, details: newInstance.sshConnectionArgs });
+        updateTerminalInstance(newInstance.id, { sshStatus: 'connecting' });
     }
-  }, [tabs.length, terminalInstances.size, createNewTerminalInstance, createNewTerminalPane, appUnlocked, updateTerminalInstance]);
+  }, [createNewTerminalPane, updateTerminalInstance]);
 
   const checkMasterKeyAndLockStatus = useCallback(async () => {
     if (!window.electronAPI) { setTimeout(checkMasterKeyAndLockStatus, 100); return; }
     const isSet = await window.electronAPI.isMasterKeySet();
     if (isSet) {
       setAppUnlocked(true); setIsMasterPasswordModalOpen(false);
-      if (tabs.length === 0 && !isDetachedWindow) { handleAddTab(); }
-      else if (isDetachedWindow && tabs.length > 0 && appUnlocked) {
-          tabs.forEach(tab => const_collectTerminalIds(tab.rootPane).forEach(termId => {
-              const instance = terminalInstances.get(termId);
-              if (instance?.sshConnectionArgs && instance.sshStatus === 'disconnected') {
-                  updateTerminalInstance(instance.id, { sshStatus: 'connecting' });
-                  window.electronAPI.sshConnect({terminalInstanceId: instance.id, details: instance.sshConnectionArgs});
-              }
-          }));
+      if (tabs.length === 0) { handleAddTab(); }
+      else if (activeTabId) {
+        const currentT = tabs.find(t => t.id === activeTabId);
+        if (currentT) collectTerminalIdsRecursive(currentT.rootPane).forEach(triggerFitForTerminal);
       }
     } else {
-      setAppUnlocked(false);
-      const keytarStatus = await window.electronAPI.checkKeytarStatus();
-      const isKeytarFunc = keytarStatus === 'available';
-      setKeytarAvailable(isKeytarFunc);
-      setIsSettingNewPasswordDialog(!isKeytarFunc);
-      setMasterPasswordMessage(isKeytarFunc ? "Enter master password..." : "Enter master password (keychain N/A)...");
-      setIsMasterPasswordModalOpen(true);
+        setAppUnlocked(false);
+        const keytarStatus = await window.electronAPI.checkKeytarStatus();
+        setKeytarAvailable(keytarStatus === 'available');
+        setIsSettingNewPasswordDialog(keytarStatus !== 'available');
+        setMasterPasswordMessage( keytarStatus === 'available' ? "Enter master password..." : "Enter master password (keychain N/A)...");
+        setIsMasterPasswordModalOpen(true);
     }
-  }, [tabs, isDetachedWindow, handleAddTab, terminalInstances, updateTerminalInstance, appUnlocked]);
+  }, [tabs, activeTabId, handleAddTab, updateTerminalInstance, triggerFitForTerminal]); // Removed terminalInstances
 
-  useEffect(() => {
-    if (getQueryParam('isDetached') === 'true') {
-      setIsDetachedWindow(true); setIsSidebarOpen(false);
-      if (window.electronAPI?.onWindowReadyForDetachedData) {
-        const unsub = window.electronAPI.onWindowReadyForDetachedData((initialTabData) => {
-          if (initialTabData) handleAddTab(undefined, initialTabData);
-        }); return unsub;
-      }
-    } else {
-      setIsDetachedWindow(false);
-      checkMasterKeyAndLockStatus();
+  useEffect(() => { checkMasterKeyAndLockStatus(); }, [checkMasterKeyAndLockStatus]);
+
+  const handleMasterPasswordSubmit = async (password: string): Promise<boolean> => {
+    const result = await window.electronAPI.setMasterKeyFromPassword(password, keytarAvailable ?? false); // Pass keytarAvailable
+    if (result) { // Assuming setMasterKeyFromPassword now returns boolean or SetMasterKeyResult
+        const isNowSet = await window.electronAPI.isMasterKeySet();
+        if (isNowSet) { setAppUnlocked(true); setIsMasterPasswordModalOpen(false); checkMasterKeyAndLockStatus(); return true; }
     }
-  }, [handleAddTab, checkMasterKeyAndLockStatus]); // Dependencies for initial setup
-
-  const handleMasterPasswordSubmit = async (password: string): Promise<SetMasterKeyResult> => {
-    const result = await window.electronAPI.setMasterKeyFromPassword(password, keytarAvailable ?? false);
-    if (result.success) {
-      const isNowSet = await window.electronAPI.isMasterKeySet();
-      if (isNowSet) { setAppUnlocked(true); setIsMasterPasswordModalOpen(false); checkMasterKeyAndLockStatus(); }
-      else { setAppUnlocked(false); }
-    } else { setAppUnlocked(false); }
-    return result;
+    setAppUnlocked(false); return false;
   };
+
   const handleAppLock = useCallback(async () => {
     if (window.electronAPI) await window.electronAPI.clearMasterKey();
     setAppUnlocked(false);
-    tabs.forEach(tab => const_collectTerminalIds(tab.rootPane).forEach(termId => {
+    tabs.forEach(tab => collectTerminalIdsRecursive(tab.rootPane).forEach(termId => {
         const instance = terminalInstances.get(termId);
         if (instance && (instance.sshStatus === 'connected' || instance.sshStatus === 'connecting')) {
             window.electronAPI.sshDisconnect({terminalInstanceId: termId});
@@ -167,32 +160,35 @@ const App: React.FC = () => {
     checkMasterKeyAndLockStatus();
   }, [tabs, terminalInstances, checkMasterKeyAndLockStatus]);
 
-  const handleSelectTab = (tabId: string) => { setActiveTabId(tabId); };
+  const handleSelectTab = (tabId: string) => { if (tabId !== activeTabId) setActiveTabId(tabId); };
 
-  const_collectTerminalIds = (pane: PaneData): string[] => {
-    if (pane.type === 'terminal' && pane.terminalInstanceId) return [pane.terminalInstanceId];
-    if (pane.type === 'split' && pane.children) return pane.children.flatMap(const_collectTerminalIds);
-    return [];
-  };
-
-  const handleCloseTab = useCallback((tabIdToClose: string) => {
-    if (isDetachedWindow && tabs.length === 1 && tabs[0].id === tabIdToClose) { window.close(); return; }
-    const tabToClose = tabs.find(t => t.id === tabIdToClose);
-    if (tabToClose) { const_collectTerminalIds(tabToClose.rootPane).forEach(termId => {
-        const instance = terminalInstances.get(termId);
-        if (instance && (instance.sshStatus === 'connected' || instance.sshStatus === 'connecting')) {
-            window.electronAPI.sshDisconnect({ terminalInstanceId: termId });
-        }
-        setTerminalInstances(prev => { const m = new Map(prev); m.delete(termId); return m; });
-    });}
+  const handleCloseTab = useCallback((tabId: string) => {
+    const tabToClose = tabs.find(t => t.id === tabId);
+    if (tabToClose) {
+        collectTerminalIdsRecursive(tabToClose.rootPane).forEach(termId => {
+            const instance = terminalInstances.get(termId);
+            if (instance && (instance.sshStatus === 'connected' || instance.sshStatus === 'connecting')) {
+                window.electronAPI.sshDisconnect({ terminalInstanceId: termId });
+            }
+            setTerminalInstances(prev => { const m = new Map(prev); m.delete(termId); return m; });
+        });
+    }
     setTabs(prevTabs => {
-      const newTabs = prevTabs.filter(tab => tab.id !== tabIdToClose);
-      if (activeTabId === tabIdToClose) {
-        if (newTabs.length > 0) { setActiveTabId(newTabs[Math.max(0, prevTabs.findIndex(t=>t.id===tabIdToClose)-1)].id); }
-        else { setActiveTabId(null); if (!isDetachedWindow) { setTimeout(() => handleAddTab(), 0); } }
-      } return newTabs;
+      const newTabs = prevTabs.filter(tab => tab.id !== tabId);
+      if (activeTabId === tabId) {
+        if (newTabs.length > 0) {
+          const closedTabIndex = prevTabs.findIndex(t => t.id === tabId);
+          setActiveTabId(newTabs[Math.max(0, closedTabIndex -1)].id);
+        } else {
+          setActiveTabId(null);
+          handleAddTab();
+        }
+      }
+      return newTabs;
     });
-  }, [tabs, activeTabId, terminalInstances, isDetachedWindow, handleAddTab]);
+  }, [tabs, activeTabId, terminalInstances, handleAddTab]);
+
+  useEffect(() => { if (appUnlocked && tabs.length === 0 && activeTabId === null) handleAddTab(); }, [appUnlocked, tabs.length, activeTabId, handleAddTab]);
 
   const setActivePaneInTab = useCallback((tabId: string, terminalInstanceId: string) => {
     setTabs(prevTabs => prevTabs.map(t => {
@@ -201,66 +197,68 @@ const App: React.FC = () => {
         return { ...t, activeTerminalInstanceId: terminalInstanceId, title: termInst?.title || t.title };
       } return t;
     }));
-  }, [terminalInstances]);
+    triggerFitForTerminal(terminalInstanceId);
+  }, [terminalInstances, triggerFitForTerminal]);
 
-  const _splitPaneRecursive = useCallback((currentPane: PaneData, targetPaneIdToSplit: string, direction: 'horizontal' | 'vertical', newTerminalPane: PaneData): PaneData => {
-    if (currentPane.id === targetPaneIdToSplit) {
+  const _splitPaneRecursive = useCallback((currentPane: PaneData, targetPaneId: string, direction: 'horizontal' | 'vertical', newTerminalPaneData: PaneData): PaneData => {
+    if (currentPane.id === targetPaneId) {
       if (currentPane.type !== 'terminal') return currentPane;
-      return { id: uuidv4(), type: 'split', direction, children: [ { ...currentPane, size: '50%', id: uuidv4() }, { ...newTerminalPane, size: '50%' } ] };
+      return { id: uuidv4(), type: 'split', direction, children: [ { ...currentPane, size: '50%', id: uuidv4() }, { ...newTerminalPaneData, size: '50%' } ] };
     }
     if (currentPane.type === 'split' && currentPane.children) {
-      return { ...currentPane, children: currentPane.children.map(child => _splitPaneRecursive(child, targetPaneIdToSplit, direction, newTerminalPane)) };
+      return { ...currentPane, children: currentPane.children.map(child => _splitPaneRecursive(child, targetPaneId, direction, newTerminalPaneData)) };
     } return currentPane;
   }, []);
-  const findPaneIdForTerminal = useCallback((pane: PaneData, terminalId: string): string | null => {
-    if (pane.type === 'terminal' && pane.terminalInstanceId === terminalId) return pane.id;
+  const findPaneIdByTerminalId = useCallback((pane: PaneData, termId: string): string | null => {
+    if (pane.type === 'terminal' && pane.terminalInstanceId === termId) return pane.id;
     if (pane.type === 'split' && pane.children) {
-      for (const child of pane.children) { const foundId = findPaneIdForTerminal(child, terminalId); if (foundId) return foundId; }
+      for (const child of pane.children) { const found = findPaneIdByTerminalId(child, termId); if (found) return found; }
     } return null;
   }, []);
   const handleSplitPane = useCallback((direction: 'horizontal' | 'vertical') => {
     if (!activeTabId) return;
     const currentTab = tabs.find(t => t.id === activeTabId);
-    if (!currentTab || !currentTab.activeTerminalInstanceId) { alert("No active terminal to split."); return; }
-    const targetPaneId = findPaneIdForTerminal(currentTab.rootPane, currentTab.activeTerminalInstanceId);
-    if (!targetPaneId) { alert("Could not find the pane to split."); return; }
-    const newInstance = createNewTerminalInstance();
-    const newPane = createNewTerminalPane(newInstance);
+    if (!currentTab || !currentTab.activeTerminalInstanceId) return;
+    const targetPaneIdToSplit = findPaneIdByTerminalId(currentTab.rootPane, currentTab.activeTerminalInstanceId);
+    if (!targetPaneIdToSplit) { console.warn("Target pane to split not found"); return; }
+    const { pane: newPaneData, instance: newInstance } = createNewTerminalPane();
     setTerminalInstances(prev => new Map(prev).set(newInstance.id, newInstance));
-    const newRootPane = _splitPaneRecursive(currentTab.rootPane, targetPaneId, direction, newPane);
-    setTabs(prevTabs => prevTabs.map(t => t.id === activeTabId ? { ...t, rootPane: newRootPane, activeTerminalInstanceId: newInstance.id } : t));
-  }, [activeTabId, tabs, findPaneIdForTerminal, createNewTerminalInstance, createNewTerminalPane, _splitPaneRecursive]);
+    const newRootPane =_splitPaneRecursive(currentTab.rootPane, targetPaneIdToSplit, direction, newPaneData);
+    setTabs(prevTabs => prevTabs.map(t => {
+      if (t.id === activeTabId) {
+        return { ...t, rootPane: newRootPane, activeTerminalInstanceId: newInstance.id };
+      } return t;
+    }));
+    triggerFitForTerminal(newInstance.id);
+  }, [activeTabId, tabs, findPaneIdByTerminalId, createNewTerminalPane, _splitPaneRecursive, terminalInstances, triggerFitForTerminal]);
 
-  const handleDetachTab = (tabIdToDetach: string) => {
-    const tabData = tabs.find(t => t.id === tabIdToDetach);
-    if (tabData && window.electronAPI && !isDetachedWindow) {
-        const termIdsInTab = const_collectTerminalIds(tabData.rootPane);
-        const containedTerminalInstances = termIdsInTab.map(tid => terminalInstances.get(tid)).filter(Boolean) as TerminalInstance[];
-        const snapshot: TabDataFromRenderer = {
-            id: tabData.id, title: tabData.title, rootPane: tabData.rootPane,
-            activeTerminalInstanceId: tabData.activeTerminalInstanceId,
-            containedTerminalInstances
-        };
-        window.electronAPI.requestDetachTab(snapshot);
-        handleCloseTab(tabIdToDetach); // Close tab in original window
-    }
-  };
+  // handleDetachTab REMOVED
 
   useEffect(() => {
     if (!appUnlocked || !window.electronAPI?.onSshStatus) return;
-    const unsubStatus = window.electronAPI.onSshStatus((event: SshStatusIPCArgs) => {
+    const unsubStatus = window.electronAPI.onSshStatus(event => {
         const inst = terminalInstances.get(event.terminalInstanceId);
+        let newTitle = event.message.substring(0,30);
         if(inst) {
-            const newTitle = (event.status === 'connected' && inst.sshConnectionArgs) ? `${inst.sshConnectionArgs.username}@${inst.sshConnectionArgs.host}` : (event.status === 'error' || event.status === 'disconnected' ? `Terminal ${[...terminalInstances.keys()].indexOf(event.terminalInstanceId) + 1}` : event.message.substring(0,30));
-            updateTerminalInstance(event.terminalInstanceId, { sshStatus: event.status, title: newTitle });
-            if (event.status === 'error' || event.status === 'disconnected') {
-                setTerminalWriteData({terminalInstanceId: event.terminalInstanceId, data: `\r\n[SSH: ${event.status}] ${event.message}\r\n${event.status !== 'connecting' ? '$ ' : ''}`});
-            }
+         newTitle = (event.status === 'connected' && inst.sshConnectionArgs) ? `${inst.sshConnectionArgs.username}@${inst.sshConnectionArgs.host}` : (event.status === 'disconnected' ? `Terminal ${[...terminalInstances.keys()].indexOf(event.terminalInstanceId) + 1}` : newTitle);
+        }
+        updateTerminalInstance(event.terminalInstanceId, {sshStatus: event.status, title: newTitle});
+        if (event.status === 'error' || event.status === 'disconnected') {
+            setTerminalWriteData({terminalInstanceId: event.terminalInstanceId, data: `\r\n[SSH: ${event.status}] ${event.message}\r\n${event.status !== 'connecting' ? '$ ' : ''}`});
         }
     });
-    const unsubData = window.electronAPI.onSshData((event: SshDataIPCArgs) => { setTerminalWriteData({ terminalInstanceId: event.terminalInstanceId, data: event.data }); });
+    const unsubData = window.electronAPI.onSshData(event => { setTerminalWriteData({ terminalInstanceId: event.terminalInstanceId, data: event.data }); });
     return () => { unsubStatus(); unsubData(); };
-  }, [appUnlocked, terminalInstances, updateTerminalInstance]);
+  }, [appUnlocked, updateTerminalInstance, terminalInstances]);
+
+  useEffect(() => {
+    if (appUnlocked && activeTabId) {
+      const currentTab = tabs.find(t => t.id === activeTabId);
+      if (currentTab) {
+        collectTerminalIdsRecursive(currentTab.rootPane).forEach(termId => triggerFitForTerminal(termId));
+      }
+    }
+  }, [appUnlocked, activeTabId, tabs, isSidebarOpen, triggerFitForTerminal]);
 
   const handleTerminalDataInput = useCallback((terminalInstanceId: string, data: string) => {
     const instance = terminalInstances.get(terminalInstanceId);
@@ -272,9 +270,7 @@ const App: React.FC = () => {
   const getBufferForTerminal = useCallback((terminalInstanceId: string): string | undefined => {
     if (terminalWriteData?.terminalInstanceId === terminalInstanceId) { const data = terminalWriteData.data; setTerminalWriteData(null); return data; } return undefined;
   }, [terminalWriteData]);
-  const getClearTriggerForTerminal = useCallback((terminalInstanceId: string): number | undefined => {
-    if (terminalClearTrigger?.terminalInstanceId === terminalInstanceId) return terminalClearTrigger.trigger; return undefined;
-  }, [terminalClearTrigger]);
+
   const connectAdHocToActive = () => {
     const activeTab = tabs.find(t => t.id === activeTabId);
     if (!activeTab || !activeTab.activeTerminalInstanceId) { alert("No active pane."); return; }
@@ -293,19 +289,19 @@ const App: React.FC = () => {
   };
 
   const currentActiveTab = tabs.find(tab => tab.id === activeTabId);
-  const currentActiveTerminalInst = currentActiveTab?.activeTerminalInstanceId ? terminalInstances.get(currentActiveTab.activeTerminalInstanceId) : null;
+  const currentActiveTerminalInstance = currentActiveTab?.activeTerminalInstanceId ? terminalInstances.get(currentActiveTab.activeTerminalInstanceId) : null;
 
   return (
     <div className="App">
       <MasterPasswordModal isOpen={isMasterPasswordModalOpen} onPasswordSubmit={handleMasterPasswordSubmit} message={masterPasswordMessage} isSettingNewPassword={isSettingNewPasswordDialog}/>
-      {!isDetachedWindow && <header className="App-header">
+      <header className="App-header">
         <div className="App-header-top">
           <div style={{display:'flex', alignItems:'center'}}>
             {appUnlocked && <button onClick={toggleSidebar} title={isSidebarOpen ? "Collapse Sidebar" : "Expand Sidebar"} className="sidebar-toggle-btn">{isSidebarOpen ? "<<" : ">>"}</button>}
             <h1>Terminus Prime</h1>
           </div>
           <div className="App-header-status">
-            {appUnlocked && currentActiveTerminalInst && <small>Pane: {currentActiveTerminalInst.title} ({currentActiveTerminalInst.sshStatus})</small>}
+            {appUnlocked && currentActiveTerminalInstance && <small>Pane: {currentActiveTerminalInstance.title} ({currentActiveTerminalInstance.sshStatus})</small>}
             {appUnlocked && <button onClick={handleAppLock} title="Lock App">Lock</button>}
           </div>
         </div>
@@ -314,29 +310,43 @@ const App: React.FC = () => {
             <input type="number" value={formPort} onChange={e => setFormPort(e.target.value)} placeholder="Port" />
             <input value={formUsername} onChange={e => setFormUsername(e.target.value)} placeholder="Username" />
             <input type="password" value={formPassword} onChange={e => setFormPassword(e.target.value)} placeholder="Password" />
-            <button onClick={connectAdHocToActive} disabled={!currentActiveTerminalInst}>Connect</button>
-            <button onClick={() => currentActiveTerminalInst && window.electronAPI.sshDisconnect({terminalInstanceId: currentActiveTerminalInst.id})} disabled={!currentActiveTerminalInst || currentActiveTerminalInst.sshStatus !== 'connected'}>Disconnect</button>
-            <button onClick={() => handleSplitPane('vertical')} disabled={!currentActiveTerminalInst}>Split V</button>
-            <button onClick={() => handleSplitPane('horizontal')} disabled={!currentActiveTerminalInst}>Split H</button>
+            <button onClick={connectAdHocToActive} disabled={!currentActiveTerminalInstance}>Connect</button>
+            <button onClick={() => currentActiveTerminalInstance && window.electronAPI.sshDisconnect({terminalInstanceId: currentActiveTerminalInstance.id})} disabled={!currentActiveTerminalInstance || currentActiveTerminalInstance.sshStatus !== 'connected'}>Disconnect</button>
+            <button onClick={() => handleSplitPane('vertical')} disabled={!currentActiveTerminalInstance}>Split V</button>
+            <button onClick={() => handleSplitPane('horizontal')} disabled={!currentActiveTerminalInstance}>Split H</button>
         </div>)}
-      </header>}
+      </header>
 
-      {appUnlocked && <TabBar tabs={tabs} activeTabId={activeTabId} onSelectTab={handleSelectTab} onCloseTab={handleCloseTab} onAddTab={() => handleAddTab()} onDetachTab={isDetachedWindow ? undefined : handleDetachTab} />}
+      {appUnlocked && <TabBar tabs={tabs} activeTabId={activeTabId} onSelectTab={handleSelectTab} onCloseTab={handleCloseTab} onAddTab={() => handleAddTab()} /* onDetachTab removed */ />}
 
       <div className="App-body">
-        {appUnlocked && !isDetachedWindow && (
+        {appUnlocked && (
           <aside className={`sidebar ${isSidebarOpen ? "open" : "closed"}`}>
             <SessionListView appUnlocked={appUnlocked} currentConnectionDetails={{ host: formHost, port: formPort, username: formUsername, password: formPassword }} onConnectSession={connectFromSessionToActive} />
           </aside>
         )}
-        <main className="App-content" style={isDetachedWindow && !isSidebarOpen ? {width: '100vw', borderLeft:'none'} : (isDetachedWindow ? {borderLeft:'none'} : {}) }>
-          {appUnlocked && currentActiveTab ? (
-            <PaneView key={currentActiveTab.id + currentActiveTab.rootPane.id} pane={currentActiveTab.rootPane} terminalInstances={terminalInstances}
-              onTerminalData={handleTerminalDataInput} onTerminalResize={handleTerminalResize}
-              getTerminalDataToDisplay={getBufferForTerminal} getTerminalClearTrigger={(id) => terminalClearTrigger?.terminalInstanceId === id ? terminalClearTrigger.trigger : undefined}
-              isActivePane={(termId) => termId === currentActiveTab.activeTerminalInstanceId}
-              onPaneClick={(_paneId, termId) => termId && setActivePaneInTab(currentActiveTab.id, termId)} />
-          ) : ( <div className="App-content-placeholder"> {appUnlocked ? (tabs.length > 0 ? "Select a tab." : "Click '+' to open a tab.") : "Application is Locked."}</div> )}
+        <main className="App-content" style={!isSidebarOpen ? {width: '100vw', borderLeft:'none'} : {} }>
+          {appUnlocked && tabs.map(tab => (
+            <div
+              key={tab.id}
+              className="tab-content-wrapper"
+              style={{ display: tab.id === activeTabId ? 'flex' : 'none', flexDirection: 'column', width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }}
+            >
+               <PaneView
+                  key={tab.rootPane.id + tab.id} // Ensure re-render if rootPane itself changes for a tab
+                  pane={tab.rootPane}
+                  terminalInstances={terminalInstances}
+                  onTerminalData={handleTerminalDataInput}
+                  onTerminalResize={handleTerminalResize}
+                  getTerminalDataToDisplay={getBufferForTerminal}
+                  isActivePane={(termId) => termId === tab.activeTerminalInstanceId}
+                  onPaneClick={(_paneId, termId) => termId && setActivePaneInTab(tab.id, termId)}
+                  getTriggerFitCount={getFitTriggerCount}
+                />
+            </div>
+          ))}
+          {!appUnlocked && <div className="App-content-placeholder">Application is Locked.</div> }
+          {appUnlocked && tabs.length === 0 && <div className="App-content-placeholder">Click '+' to open a new tab.</div>}
         </main>
       </div>
     </div>
